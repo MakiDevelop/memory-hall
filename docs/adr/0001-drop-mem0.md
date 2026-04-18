@@ -1,6 +1,6 @@
 # ADR 0001 — Drop mem0 as primary memory store
 
-- **Status**: Proposed (pending Codex dissent)
+- **Status**: Accepted (Codex dissent satisfied 2026-04-18)
 - **Date**: 2026-04-18
 
 ## Context
@@ -21,23 +21,30 @@ Build a new memory layer (this project, `memory-hall`) with:
 
 - **Zero-LLM write path** — write is `INSERT` + embedding only. No synchronous fact extraction.
 - **Cross-agent by primary contract** — HTTP REST as the canonical interface; MCP and CLI as convenience wrappers. None is the "only legal" path.
-- **Multi-tenant data model from v0.1** — every row, every query carries `tenant_id`. Single-tenant runtime initially, but the schema doesn't need migration to scale.
+- **Multi-tenant data model from v0.1** — every row, every query carries `tenant_id` (see ADR 0002 for runtime scope clarification).
 - **Optional async enrichment (v2+)** — if structured fact extraction is desired, it runs out-of-band and never blocks a session.
 
 `mem0` stays installed as a read-only legacy tool for querying historical entries. No new writes go to it.
+
+memory-hall replaces the engine layer; the existing `memory-gateway` repo continues as the deployment platform that hosts memory-hall and adds the governance APIs (see ADR 0003 for the split).
 
 ## Consequences
 
 ### Positive
 - Daily write failures eliminated.
 - Cross-agent memory becomes a real architectural primitive, not a Claude-side wrapper.
-- Multi-tenant by design — releasable to others without refactoring.
-- Aligns with [middleware-not-monopoly](../../docs/design.md#three-entry-points) principle: no privileged path.
+- Multi-tenant data model — releasable to others without schema migration.
+- Aligns with the "no privileged path" principle (HTTP / MCP / CLI all hit the same engine).
 
 ### Negative
-- Loss of automatic fact extraction. "Find facts about X" degrades to "find entries mentioning X." For most retrieval use cases (cross-session pickup, decision audit trail), this is acceptable; for some it is not.
-- Existing mem0 entries are not migrated. Users who need to query both must use both tools.
-- Maintaining a memory layer is now an in-house responsibility.
+
+**Operational cost: tool fragmentation during transition.**
+The author's mem0 store is not a cold archive. Audit of recent session handoffs (April 2026) shows ~50+ entries per week being backfilled or actively written, and several wrap-ups still falling back to local-only writes during mem0 outages. After this decision, those entries become *historical* and live in mem0 read-only — but for several months, "find what I wrote about X" may require checking both stores. This is a real operational tax, not a theoretical one. Mitigation: a `mh import-mem0` one-shot migration script is on the v0.2 roadmap; until then, dual-tool retrieval is documented as expected friction.
+
+**Loss of automatic fact extraction.**
+"Find facts about X" degrades to "find entries mentioning X." For most retrieval use cases (cross-session pickup, decision audit trail), this is acceptable; for use cases that depended on structured fact graphs, it is not. The optional v2+ enrichment worker will provide an async path for users who want it.
+
+**Maintenance.** Maintaining a memory layer is now an in-house responsibility.
 
 ### Neutral
 - New project to maintain, but the surface area is much smaller than mem0 and the failure modes are inspectable (no LLM in the write path).
@@ -48,16 +55,20 @@ Build a new memory layer (this project, `memory-hall`) with:
 |---|---|
 | Patch mem0 timeouts (raise deadlines, add breaker reset, etc.) | Architectural ceiling unchanged. Would only reduce frequency, not eliminate failures. |
 | Switch to [Letta](https://github.com/letta-ai/letta) | Full agent runtime, not a memory layer. Too opinionated and heavy. |
-| Switch to [Zep](https://github.com/getzep/zep) / [Graphiti](https://github.com/getzep/graphiti) | Higher retrieval quality but requires Neo4j or FalkorDB infrastructure — too heavy for "min local" goal. |
+| Switch to [Zep](https://github.com/getzep/zep) / [Graphiti](https://github.com/getzep/graphiti) | Higher retrieval quality but requires Neo4j or FalkorDB — too heavy for "min local" goal. |
 | Use [Mnemosyne](https://github.com/Mnemosyne-Project) | Closest design philosophy, but TypeScript and lacks a multi-agent identity layer. |
 | Wrap mem0 with a fire-and-forget queue | Caller no longer knows write outcome — silent data loss risk. |
+| Build into existing memory-gateway | Couples engine and governance; gateway's `MemoryServiceProxy` already hardcodes a specific downstream HTTP contract — it is **not** a thin "swap the backend" layer. See ADR 0003 for the split decision. |
 
-## Open Questions
+## v0.2 Roadmap commitments (from this ADR)
 
-- Should the project ship a one-shot `mem0 → memory-hall` exporter for users with existing mem0 data? (Currently: no, by ADR scope.)
-- Should the optional v2 enrichment worker be in-tree or a separate package?
+1. `mh import-mem0` one-shot migration script
+2. Optional `enrichment-worker` for async fact extraction (off by default)
+3. Document the retrieval-fragmentation period in the README
 
 ## References
 
 - Incident record (private): `STG-019` — diagnosis of mem0 write timeouts
 - Decision record (private): `STG-020` — full proposal contract with risk analysis
+- Codex Dissent (private): `~/Documents/agent-council/codex-answer-mh-dissent.md`
+- ADR 0003 — engine library vs deployment platform split

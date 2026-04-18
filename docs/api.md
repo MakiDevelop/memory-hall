@@ -5,11 +5,25 @@
 
 Base URL: `http://localhost:9000`
 
+## Auth modes
+
+memory-hall has **two operating modes** depending on how it's deployed:
+
+### Dev / standalone mode (default for `memory-hall serve`)
+- Listens on `127.0.0.1` only
+- No `Authorization` header required
+- No `X-Nonce` required
+- `tenant_id` is always `"default"`
+- Suitable for: single-user local use, integration testing, examples
+
+### Production mode (when deployed via `memory-gateway`)
 All endpoints require:
 - `Authorization: HMAC <key-id>:<signature>` header
 - `X-Nonce: <random>` header (replay protection)
+- `tenant_id` resolved from the auth principal, never accepted from the request body
+- Bind address can be `0.0.0.0`
 
-`tenant_id` is resolved from the auth principal, never accepted from the request body.
+The examples below show production-mode requests. For dev mode, drop the `Authorization` and `X-Nonce` headers.
 
 ## Memory
 
