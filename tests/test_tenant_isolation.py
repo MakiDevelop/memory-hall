@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from tests.conftest import client_for_app
 
 
