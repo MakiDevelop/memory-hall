@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     search_candidate_multiplier: int = 5
     request_timeout_s: float = 5.0
     reindex_batch_size: int = 500
+    max_content_bytes: int = 64 * 1024
 
     def prepare_paths(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)

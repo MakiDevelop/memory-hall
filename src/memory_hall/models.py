@@ -224,7 +224,7 @@ class AuditResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok"]
+    status: Literal["ok", "degraded"]
     storage: str
     vector_store: str
     embedder: str

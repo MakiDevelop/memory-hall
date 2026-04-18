@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import random
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from memory_hall.config import Settings
 from memory_hall.embedder.interface import Embedder
@@ -40,6 +44,9 @@ from memory_hall.storage.vector_store import SqliteVecStore, VectorStore
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _RRF_K = 60
+_BACKGROUND_REINDEX_INTERVAL_S = 120.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -62,6 +69,7 @@ class LinkJob:
 class ReindexJob:
     tenant_id: str
     future: asyncio.Future[ReindexResponse]
+    pending_only: bool = False
 
 
 class MemoryHallRuntime:
@@ -79,6 +87,9 @@ class MemoryHallRuntime:
         self.embedder = embedder
         self._queue: asyncio.Queue[WriteJob | LinkJob | ReindexJob | None] | None = None
         self._worker: asyncio.Task[None] | None = None
+        self._reindex_worker: asyncio.Task[None] | None = None
+        self._background_reindex_interval_s = _BACKGROUND_REINDEX_INTERVAL_S
+        self._background_reindex_jitter_s = min(15.0, _BACKGROUND_REINDEX_INTERVAL_S * 0.1)
 
     async def start(self) -> None:
         self.settings.prepare_paths()
@@ -86,8 +97,13 @@ class MemoryHallRuntime:
         self.vector_store.open()
         self._queue = asyncio.Queue()
         self._worker = asyncio.create_task(self._consume_writes())
+        self._reindex_worker = asyncio.create_task(self._run_background_reindex())
 
     async def stop(self) -> None:
+        if self._reindex_worker is not None:
+            self._reindex_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reindex_worker
         if self._queue is not None:
             await self._queue.put(None)
         if self._worker is not None:
@@ -132,8 +148,22 @@ class MemoryHallRuntime:
         return await future
 
     async def reindex(self, *, tenant_id: str) -> ReindexResponse:
+        return await self._queue_reindex(tenant_id=tenant_id, pending_only=False)
+
+    async def _queue_reindex(
+        self,
+        *,
+        tenant_id: str,
+        pending_only: bool,
+    ) -> ReindexResponse:
         future: asyncio.Future[ReindexResponse] = asyncio.get_running_loop().create_future()
-        await self._require_queue().put(ReindexJob(tenant_id=tenant_id, future=future))
+        await self._require_queue().put(
+            ReindexJob(
+                tenant_id=tenant_id,
+                future=future,
+                pending_only=pending_only,
+            )
+        )
         return await future
 
     async def search_entries(
@@ -251,7 +281,22 @@ class MemoryHallRuntime:
     async def health(self) -> HealthResponse:
         await self.storage.healthcheck()
         await asyncio.to_thread(self.vector_store.healthcheck)
-        return HealthResponse(status="ok", storage="ok", vector_store="ok", embedder="ok")
+        status = "ok"
+        embedder_status = "ok"
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self.embedder.embed, "healthcheck"),
+                timeout=min(1.0, self.settings.embed_timeout_s),
+            )
+        except Exception:
+            status = "degraded"
+            embedder_status = "degraded"
+        return HealthResponse(
+            status=status,
+            storage="ok",
+            vector_store="ok",
+            embedder=embedder_status,
+        )
 
     async def audit(self) -> AuditResponse:
         payload = await self.storage.audit()
@@ -276,6 +321,20 @@ class MemoryHallRuntime:
                     job.future.set_exception(exc)
             finally:
                 queue.task_done()
+
+    async def _run_background_reindex(self) -> None:
+        tenant_id = self.settings.default_tenant_id
+        while True:
+            await asyncio.sleep(
+                self._background_reindex_interval_s
+                + random.uniform(0.0, self._background_reindex_jitter_s)  # noqa: S311
+            )
+            try:
+                await self._queue_reindex(tenant_id=tenant_id, pending_only=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("background reindex failed: %s", exc)
 
     async def _handle_write(self, job: WriteJob) -> WriteOutcome:
         created_at = utc_now()
@@ -353,20 +412,27 @@ class MemoryHallRuntime:
         return EntryDocument.from_entry(entry)
 
     async def _handle_reindex(self, job: ReindexJob) -> ReindexResponse:
-        all_entries = await self.storage.list_entries(job.tenant_id, limit=None)
+        if job.pending_only:
+            all_entries = await self.storage.list_pending_entries(
+                job.tenant_id,
+                limit=self.settings.reindex_batch_size,
+            )
+        else:
+            all_entries = await self.storage.list_entries(job.tenant_id, limit=None)
         scanned = len(all_entries)
         embedded_count = 0
         pending_count = 0
         for entry in all_entries:
-            needs_reindex = entry.sync_status != SYNC_EMBEDDED
-            if not needs_reindex:
-                needs_reindex = not await asyncio.to_thread(
-                    self.vector_store.contains,
-                    entry.tenant_id,
-                    entry.entry_id,
-                )
-            if not needs_reindex:
-                continue
+            if not job.pending_only:
+                needs_reindex = entry.sync_status != SYNC_EMBEDDED
+                if not needs_reindex:
+                    needs_reindex = not await asyncio.to_thread(
+                        self.vector_store.contains,
+                        entry.tenant_id,
+                        entry.entry_id,
+                    )
+                if not needs_reindex:
+                    continue
             try:
                 vector = await asyncio.wait_for(
                     asyncio.to_thread(self.embedder.embed, entry.content),
@@ -480,6 +546,35 @@ def create_app(
             await runtime.stop()
 
     app = FastAPI(title="memory-hall", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def enforce_write_content_limit(request: Request, call_next):
+        if request.method == "POST" and request.url.path == "/v1/memory/write":
+            body = await request.body()
+            if body:
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict):
+                    content = payload.get("content")
+                    if isinstance(content, str):
+                        if len(content.encode("utf-8")) > active_settings.max_content_bytes:
+                            return JSONResponse(
+                                status_code=413,
+                                content={
+                                    "detail": (
+                                        f"content exceeds {active_settings.max_content_bytes} bytes"
+                                    )
+                                },
+                            )
+
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            request = Request(request.scope, receive)
+        return await call_next(request)
+
     app.add_middleware(TenantMiddleware, tenant_id=active_settings.default_tenant_id)
     app.include_router(health_router)
     app.include_router(memory_router)

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from tests.conftest import client_for_app
+from memory_hall.server.app import create_app
+from tests.conftest import DeterministicEmbedder, TimeoutEmbedder, build_settings, client_for_app
 
 
 @pytest.mark.asyncio
@@ -14,3 +17,35 @@ async def test_health_returns_ok(app_factory) -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["storage"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_returns_degraded_when_embedder_unreachable(app_factory) -> None:
+    app = app_factory(embedder=TimeoutEmbedder())
+    async with client_for_app(app) as client:
+        response = await client.get("/v1/health")
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["embedder"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_write_rejects_oversized_content(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.max_content_bytes = 8
+    app = create_app(
+        settings=settings,
+        embedder=DeterministicEmbedder(dim=settings.vector_dim),
+    )
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/memory/write",
+            json={
+                "agent_id": "codex",
+                "namespace": "shared",
+                "type": "note",
+                "content": "123456789",
+            },
+        )
+    assert response.status_code == 413
