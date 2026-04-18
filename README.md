@@ -2,7 +2,60 @@
 
 > Cross-session, cross-agent memory for the multi-agent era.
 
-A self-hostable memory layer for people running multiple AI agents (Claude, Codex, Gemini, local LLMs, …) and wanting them to share context, decisions, and observations across sessions.
+**Languages**:
+[English](#english) · [繁體中文](#繁體中文) · [简体中文](#简体中文) · [日本語](#日本語) · [Deutsch](#deutsch) · [Français](#français) · [Italiano](#italiano) · [한국어](#한국어)
+
+---
+
+### English
+
+A self-hostable memory layer for people running multiple AI agents (Claude, Codex, Gemini, local LLMs, humans, bots …). One hall, many agents — they share context, decisions, and observations across sessions. Zero LLM calls on the write path, so it stays fast and reliable where `mem0` and similar tools stall.
+
+Contributions welcome. File an issue, open a PR, share what broke for you. This project is built in the open on purpose.
+
+### 繁體中文
+
+memory-hall 是一座給多 AI agent（Claude / Codex / Gemini / 本地 LLM / 人類 / 機器人）共用的記憶大廳。一座大廳，多位 agent——跨 session 分享上下文、決策、觀察。寫入不呼叫 LLM，所以在 `mem0` 這類工具會卡住的地方仍然快且穩。
+
+歡迎一起來玩。開 issue、送 PR、回報你踩到的坑——這專案就是要公開地長出來。
+
+### 简体中文
+
+memory-hall 是一座给多 AI agent（Claude / Codex / Gemini / 本地 LLM / 人类 / 机器人）共用的记忆大厅。一座大厅，多位 agent——跨 session 分享上下文、决策、观察。写入不调 LLM，因此在 `mem0` 这类工具会卡住的地方仍然快且稳。
+
+欢迎一起来玩。开 issue、提 PR、反馈你踩到的坑——这项目本来就要在公开场合长出来。
+
+### 日本語
+
+memory-hall は、複数の AI エージェント（Claude / Codex / Gemini / ローカル LLM / 人間 / ボットなど）が共有できるセルフホスト型メモリ層です。ひとつのホールに、たくさんのエージェント——セッションをまたいでコンテキスト・決定・観察を共有します。書き込み時に LLM を呼ばないので、`mem0` などが詰まる場面でも速く安定して動きます。
+
+コントリビューション歓迎。Issue の起票、PR の提出、踏んだ罠の共有、大歓迎です。
+
+### Deutsch
+
+memory-hall ist eine selbst-hostbare Speicher­schicht für Setups, in denen mehrere KI-Agenten (Claude, Codex, Gemini, lokale LLMs, Menschen, Bots …) nebeneinander arbeiten. Eine Halle, viele Agenten — sie teilen Kontext, Entscheidungen und Beobachtungen über Sessions hinweg. Der Schreibpfad ruft kein LLM auf und bleibt deshalb dort schnell und zuverlässig, wo `mem0` & Co. hängen.
+
+Beiträge sind willkommen. Issues, Pull Requests und Erfahrungsberichte machen das Projekt besser.
+
+### Français
+
+memory-hall est une couche mémoire auto-hébergeable conçue pour les setups multi-agents (Claude, Codex, Gemini, LLM locaux, humains, bots …). Un même hall, plusieurs agents — ils partagent contexte, décisions et observations à travers les sessions. Aucun appel LLM au moment de l'écriture : ça reste rapide et fiable là où `mem0` et consorts s'enlisent.
+
+Les contributions sont les bienvenues. Ouvrez une issue, proposez une PR, partagez ce qui a cassé chez vous.
+
+### Italiano
+
+memory-hall è un livello di memoria self-hosted pensato per chi fa girare più agenti AI insieme (Claude, Codex, Gemini, LLM locali, persone, bot …). Una sola hall, tanti agenti — condividono contesto, decisioni e osservazioni tra una sessione e l'altra. La scrittura non chiama nessun LLM, quindi rimane veloce e affidabile anche dove `mem0` e simili si piantano.
+
+I contributi sono benvenuti. Aprite una issue, mandate una PR, raccontate cosa si è rotto da voi.
+
+### 한국어
+
+memory-hall 은 여러 AI 에이전트(Claude / Codex / Gemini / 로컬 LLM / 사람 / 봇 등)가 함께 쓰는 셀프 호스트형 메모리 레이어입니다. 한 홀에 여러 에이전트가 모여 세션을 넘나들며 컨텍스트·결정·관찰을 공유합니다. 쓰기 경로에서 LLM을 호출하지 않기 때문에 `mem0` 같은 도구가 멈추는 상황에서도 빠르고 안정적으로 동작합니다.
+
+기여는 언제든 환영합니다. 이슈 등록, PR 제출, 버그 제보 모두 환영이에요.
+
+---
 
 **Status:** v0.1 dogfood — API will change. Do not yet use in production.
 
