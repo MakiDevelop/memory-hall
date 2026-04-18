@@ -54,6 +54,42 @@ See [`docs/design.md`](docs/design.md) for full architecture and [`docs/api.md`]
 
 No entry is privileged — they all hit the same backend, so no single-point-of-failure path.
 
+### Embedded (in-process) use
+
+Some agents run in sandboxes that block localhost sockets (Codex CLI, some Gemini setups, restricted containers). For those, skip HTTP entirely and use memory-hall as a Python library:
+
+```python
+import asyncio
+from memory_hall import Settings, build_runtime
+from memory_hall.models import WriteMemoryRequest, SearchMemoryRequest
+
+async def main():
+    runtime = build_runtime(settings=Settings())
+    await runtime.start()
+    try:
+        written = await runtime.write_entry(
+            tenant_id="default",
+            principal_id="my-agent",
+            payload=WriteMemoryRequest(
+                agent_id="my-agent",
+                namespace="shared",
+                type="note",
+                content="hello from inside the process",
+            ),
+        )
+        hits = await runtime.search_entries(
+            tenant_id="default",
+            payload=SearchMemoryRequest(query="hello", limit=5),
+        )
+        print(written.entry.entry_id, hits.total)
+    finally:
+        await runtime.stop()
+
+asyncio.run(main())
+```
+
+No network, no auth, same storage. Useful for sandboxed agents, tests, batch imports.
+
 ## Status & roadmap
 
 - **v0.1** (current) — single-tenant runtime, SQLite + Ollama, HTTP + CLI

@@ -421,13 +421,19 @@ class MemoryHallRuntime:
         return ranked[:limit]
 
 
-def create_app(
+def build_runtime(
     *,
     settings: Settings | None = None,
     storage: Storage | None = None,
     vector_store: VectorStore | None = None,
     embedder: Embedder | None = None,
-) -> FastAPI:
+) -> MemoryHallRuntime:
+    """Assemble a MemoryHallRuntime with default components from settings.
+
+    For HTTP use, prefer `create_app` (it builds and manages the runtime via lifespan).
+    For embedded / in-process use (e.g. sandboxed agents that cannot open sockets),
+    call `build_runtime()` then `await runtime.start()` / `await runtime.stop()` yourself.
+    """
     active_settings = settings or Settings()
     active_storage = storage or SqliteStore(active_settings.database_path)
     active_vector_store = vector_store or SqliteVecStore(
@@ -440,12 +446,28 @@ def create_app(
         timeout_s=active_settings.embed_timeout_s,
         dim=active_settings.vector_dim,
     )
-    runtime = MemoryHallRuntime(
+    return MemoryHallRuntime(
         settings=active_settings,
         storage=active_storage,
         vector_store=active_vector_store,
         embedder=active_embedder,
     )
+
+
+def create_app(
+    *,
+    settings: Settings | None = None,
+    storage: Storage | None = None,
+    vector_store: VectorStore | None = None,
+    embedder: Embedder | None = None,
+) -> FastAPI:
+    runtime = build_runtime(
+        settings=settings,
+        storage=storage,
+        vector_store=vector_store,
+        embedder=embedder,
+    )
+    active_settings = runtime.settings
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
