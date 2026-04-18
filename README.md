@@ -13,7 +13,7 @@ Existing AI memory tools (mem0, Letta, …) are Claude-only or chat-only and bur
 - **One memory hall, many agents.** Claude writes via MCP, Codex writes via CLI, your shell scripts write via curl. They all read the same store.
 - **Cross-session by default.** Every entry is timestamped, agent-tagged, and namespaced. Pick up tomorrow where any agent left off today.
 - **Zero-LLM write path.** Writes are SQLite + embedding only — P99 < 100ms on local-only deployments (Ollama same host, sqlite-vec, single tenant). Optional enrichment runs in the background, never blocks you.
-- **Min local, max distributed.** Runs on a single laptop with `sqlite-vec` and local Ollama embeddings. Scales to a multi-host home AI lab with Qdrant + remote embedder via [memory-gateway](https://github.com/USERNAME/memory-gateway).
+- **Min local, max distributed.** Runs on a single laptop with `sqlite-vec` and local Ollama embeddings. Scales to a multi-host home AI lab with Qdrant + remote embedder via [memory-gateway](https://github.com/MakiDevelop/memory-gateway).
 - **Multi-tenant data model from day one.** Schema-ready for multi-user release; v0.1 runtime ships single-tenant for focus (see [ADR 0002](docs/adr/0002-multi-tenant-from-day-one.md)).
 
 ## Quickstart (single-agent, 1 minute, no auth)
@@ -22,7 +22,7 @@ Requires: `python>=3.12`, `ollama` running locally, `bge-m3` model pulled.
 
 ```bash
 ollama pull bge-m3
-git clone https://github.com/USERNAME/memory-hall
+git clone https://github.com/MakiDevelop/memory-hall
 cd memory-hall
 uv sync
 uv run memory-hall serve  # listens on :9000, dev mode (no auth, localhost-only)
@@ -33,7 +33,7 @@ curl -X POST http://localhost:9000/v1/memory/write \
   -d '{"agent_id":"shell","namespace":"home","type":"note","content":"hello memory hall"}'
 ```
 
-> **Auth note:** the standalone `memory-hall serve` runs in dev mode by default — no HMAC, no nonce, listens on localhost. For production / multi-user / network-exposed deployments, deploy via [`memory-gateway`](https://github.com/USERNAME/memory-gateway), which adds HMAC auth, ACL, and governance APIs on top of memory-hall. See [ADR 0003](docs/adr/0003-engine-library-vs-deployment-platform.md) for the engine/platform split.
+> **Auth note:** the standalone `memory-hall serve` runs in dev mode by default — no HMAC, no nonce, listens on localhost. For production / multi-user / network-exposed deployments, deploy via [`memory-gateway`](https://github.com/MakiDevelop/memory-gateway), which adds HMAC auth, ACL, and governance APIs on top of memory-hall. See [ADR 0003](docs/adr/0003-engine-library-vs-deployment-platform.md) for the engine/platform split.
 
 ## Quickstart (multi-host, your home AI lab)
 

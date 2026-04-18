@@ -41,7 +41,7 @@ memory-hall is the **engine library**:
 - Storage, embedder, search, CLI, optional minimal FastAPI server for solo use
 - Pip-installable, runs without auth in local-only setups
 
-[`memory-gateway`](https://github.com/USERNAME/memory-gateway) is the **deployment platform** that wraps memory-hall with HMAC auth, ACL, staging, proposals, and event-sourced governance.
+[`memory-gateway`](https://github.com/MakiDevelop/memory-gateway) is the **deployment platform** that wraps memory-hall with HMAC auth, ACL, staging, proposals, and event-sourced governance.
 
 Solo users: `memory-hall serve` is enough. Production / multi-user: deploy `memory-gateway`, which embeds memory-hall as a library.
 

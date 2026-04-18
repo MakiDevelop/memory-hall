@@ -5,7 +5,7 @@
 
 ## Context
 
-The author already maintains [memory-gateway](https://github.com/USERNAME/memory-gateway): a FastAPI service with HMAC auth, ACL, staging, proposals, and event-sourced governance APIs. Started in early 2026, paused mid-flight when its mem0-backed proxy turned out to inherit all of mem0's reliability problems.
+The author already maintains [memory-gateway](https://github.com/MakiDevelop/memory-gateway): a FastAPI service with HMAC auth, ACL, staging, proposals, and event-sourced governance APIs. Started in early 2026, paused mid-flight when its mem0-backed proxy turned out to inherit all of mem0's reliability problems.
 
 Now building memory-hall as the replacement memory layer raises an obvious question: **build into memory-gateway, or fork a new repo?**
 

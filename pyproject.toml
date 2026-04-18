@@ -55,10 +55,10 @@ memory-hall = "memory_hall.cli.main:app"
 mh = "memory_hall.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/USERNAME/memory-hall"
-Documentation = "https://github.com/USERNAME/memory-hall/tree/main/docs"
-Repository = "https://github.com/USERNAME/memory-hall"
-Issues = "https://github.com/USERNAME/memory-hall/issues"
+Homepage = "https://github.com/MakiDevelop/memory-hall"
+Documentation = "https://github.com/MakiDevelop/memory-hall/tree/main/docs"
+Repository = "https://github.com/MakiDevelop/memory-hall"
+Issues = "https://github.com/MakiDevelop/memory-hall/issues"
 
 [build-system]
 requires = ["hatchling"]
