@@ -1,0 +1,87 @@
+[project]
+name = "memory-hall"
+version = "0.1.0"
+description = "Cross-session, cross-agent memory layer for the multi-agent era."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "memory-hall contributors" },
+]
+keywords = ["ai", "agent", "memory", "llm", "mcp", "claude", "self-hosted"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "httpx>=0.27",
+    "ulid-py>=1.1",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+sqlite-vec = ["sqlite-vec>=0.1.6"]
+qdrant = ["qdrant-client>=1.12"]
+ollama = ["ollama>=0.4"]
+openai = ["openai>=1.50"]
+sentence-transformers = ["sentence-transformers>=3.0"]
+cli = ["typer>=0.13", "rich>=13.9"]
+all = [
+    "memory-hall[sqlite-vec,qdrant,ollama,openai,cli]",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+memory-hall = "memory_hall.cli.main:app"
+mh = "memory_hall.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/USERNAME/memory-hall"
+Documentation = "https://github.com/USERNAME/memory-hall/tree/main/docs"
+Repository = "https://github.com/USERNAME/memory-hall"
+Issues = "https://github.com/USERNAME/memory-hall/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory_hall"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "S", "W"]
+ignore = ["S101"]  # allow assert in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true

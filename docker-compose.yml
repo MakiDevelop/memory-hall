@@ -1,0 +1,47 @@
+# memory-hall — minimal multi-host compose
+#
+# Default config: memory-hall + qdrant + (optional) ollama
+# For single-laptop minimum, see README quickstart (no docker needed).
+
+services:
+  memory-hall:
+    build: .
+    image: memory-hall:0.1.0
+    ports:
+      - "9000:9000"
+    environment:
+      MH_HOST: 0.0.0.0
+      MH_PORT: "9000"
+      MH_SQLITE_PATH: /data/memory_hall.db
+      MH_VECTOR_STORE: qdrant
+      MH_QDRANT_URL: http://qdrant:6333
+      MH_EMBEDDER: ollama
+      MH_OLLAMA_BASE: ${MH_OLLAMA_BASE:-http://host.docker.internal:11434}
+      MH_EMBEDDER_MODEL: bge-m3
+    volumes:
+      - mh-data:/data
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+  # Optional: bundle Ollama if you don't have it elsewhere
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   restart: unless-stopped
+
+volumes:
+  mh-data:
+  qdrant-data:
+  # ollama-data:
