@@ -12,12 +12,10 @@ services:
     environment:
       MH_HOST: 0.0.0.0
       MH_PORT: "9000"
-      MH_SQLITE_PATH: /data/memory_hall.db
-      MH_VECTOR_STORE: qdrant
-      MH_QDRANT_URL: http://qdrant:6333
-      MH_EMBEDDER: ollama
-      MH_OLLAMA_BASE: ${MH_OLLAMA_BASE:-http://host.docker.internal:11434}
-      MH_EMBEDDER_MODEL: bge-m3
+      MH_DATABASE_PATH: /data/memory-hall.sqlite3
+      MH_VECTOR_DATABASE_PATH: /data/memory-hall-vectors.sqlite3
+      MH_OLLAMA_BASE_URL: ${MH_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      MH_OLLAMA_MODEL: bge-m3
     volumes:
       - mh-data:/data
     depends_on:

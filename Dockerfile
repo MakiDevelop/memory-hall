@@ -9,7 +9,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /bin/uv
 
-WORKDIR /build
+# Use /app as workdir so venv shebangs point to /app/.venv/bin/python,
+# which is where runtime stage will mount the venv.
+WORKDIR /app
 
 COPY pyproject.toml uv.lock* README.md ./
 COPY src ./src
@@ -25,7 +27,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MH_HOST=0.0.0.0 \
     MH_PORT=9000 \
-    MH_SQLITE_PATH=/data/memory_hall.db
+    MH_DATABASE_PATH=/data/memory-hall.sqlite3 \
+    MH_VECTOR_DATABASE_PATH=/data/memory-hall-vectors.sqlite3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
@@ -36,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY --from=builder --chown=memhall:memhall /build/.venv /app/.venv
+COPY --from=builder --chown=memhall:memhall /app/.venv /app/.venv
 COPY --chown=memhall:memhall src /app/src
 COPY --chown=memhall:memhall pyproject.toml README.md /app/
 
