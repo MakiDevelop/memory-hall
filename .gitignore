@@ -45,3 +45,7 @@ qdrant_storage/
 # Logs
 *.log
 logs/
+
+# Agent local configs (symlinks to ~/.gemini/ etc., not repo content)
+GEMINI.md
+CLAUDE.md.local
