@@ -9,8 +9,8 @@ dist/
 *.egg-info/
 .eggs/
 .pytest_cache/
-.mypy_cache/
 .ruff_cache/
+.mypy_cache/
 .tox/
 .coverage
 .coverage.*
@@ -39,6 +39,7 @@ env/
 *.db-shm
 *.db-wal
 data/
+.data/
 qdrant_storage/
 
 # Logs
