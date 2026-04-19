@@ -16,6 +16,7 @@ from rich.json import JSON
 from rich.table import Table
 
 from memory_hall.config import Settings
+from memory_hall.models import encode_cursor
 from memory_hall.server.app import create_app
 from memory_hall.storage.sqlite_store import SqliteStore
 
@@ -203,16 +204,21 @@ async def _reindex_fts(
     store = SqliteStore(settings.database_path)
     await store.open()
     try:
-        entries = await store.list_entries(active_tenant_id, limit=None)
-        entries.reverse()
         scanned = 0
         reindexed = 0
-        for offset in range(0, len(entries), batch_size):
-            batch = entries[offset : offset + batch_size]
+        cursor: str | None = None
+        while True:
+            batch = await store.list_entries(
+                active_tenant_id,
+                limit=batch_size,
+                cursor=cursor,
+            )
+            if not batch:
+                break
             scanned += len(batch)
             reindexed += await store.reindex_fts_entries(batch)
-            console.print(
-                f"tenant={active_tenant_id} scanned={scanned}/{len(entries)} reindexed={reindexed}"
-            )
+            tail = batch[-1]
+            cursor = encode_cursor(tail.created_at, tail.entry_id)
+            console.print(f"tenant={active_tenant_id} scanned={scanned} reindexed={reindexed}")
     finally:
         await store.close()
