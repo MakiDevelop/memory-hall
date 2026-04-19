@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
-import jieba
 
 from memory_hall.models import Entry, InsertOutcome, SearchCandidate, decode_cursor, dump_json
 
@@ -548,6 +547,8 @@ class SqliteStore:
 
     @classmethod
     def _tokenize_fts_text(cls, text: str) -> list[str]:
+        import jieba
+
         tokens: list[str] = []
         for raw_token in jieba.cut(text):
             token = raw_token.replace('"', " ").strip()
