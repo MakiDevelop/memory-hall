@@ -143,12 +143,30 @@ asyncio.run(main())
 
 No network, no auth, same storage. Useful for sandboxed agents, tests, batch imports.
 
+## What this is / isn't (honest expectations)
+
+**What v0.2 is**
+- A local-first memory engine: write, search (hybrid / semantic / lexical), reindex. HTTP + CLI + in-process embedded mode.
+- Runs on one box or your home lab (Mac mini + DGX Spark embedder over Tailscale in our setup).
+- CJK-aware: FTS uses jieba-based pre-tokenization, so Chinese queries don't miss on substring boundaries.
+- Durable by default: SQLite WAL, atomic write → index → vector, content_hash dedup, graceful degradation when the embedder is down (HTTP 202 + `sync_status=pending` + background reindex).
+- Dogfooded by the seven-agent stack that built it (Claude / Codex / Gemini / Max / Grok / gemma4 / Maki).
+
+**What v0.2 is *not*, yet**
+- Not a distributed database. No replication, no consensus. One writer, one reader.
+- Not production-scale for millions of entries. SQLite + sqlite-vec vec0 comfortably to ~100k on commodity hardware; beyond that, swap the vector adapter.
+- No MCP server yet (planned v0.3). Today you talk HTTP or in-process import.
+- No authentication. `X-Tenant-ID` header routes tenants but doesn't authenticate them. Put it behind your own gateway.
+- No multi-tenant validation at scale. Schema is multi-tenant from day one (ADR-0002) but we haven't stress-tested cross-tenant isolation.
+- No fancy enrichment. Writes go in roughly as given; there's no automatic fact extraction, summarization, or linking.
+
 ## Status & roadmap
 
-- **v0.1** (current) — single-tenant runtime, SQLite + Ollama, HTTP + CLI
-- **v0.2** — MCP server, Qdrant adapter, multi-tenant validation, docker compose for self-host
-- **v1.0** — public release, docs site, example integrations
-- **v2.0** — optional enrichment worker (async fact extraction), more embedder/store adapters
+- **v0.1** (2026-04-18) — engine shipped. Hit@3 hybrid=60% / lexical=60% / semantic=0% on 177-entry CJK corpus. Durability + concurrency verified. [results-2026-04-18.md](docs/benchmarks/results-2026-04-18.md).
+- **v0.2** (2026-04-19, current) — jieba CJK tokenizer (pure-CJK queries now lexically hit), Gemini-round-1 nice-to-haves + v0.1 backlog cleared, bumped sqlite-vec 0.1.6 → 0.1.9 (upstream ARM64 ELF32 bug, [#251](https://github.com/asg017/sqlite-vec/issues/251)), Dockerfile build-time vec0 smoke test. [results-2026-04-19.md](docs/benchmarks/results-2026-04-19.md).
+- **v0.3** — MCP server, Qdrant adapter, docker compose for self-host, auth/tenant enforcement.
+- **v1.0** — public release, docs site, example integrations.
+- **v2.0** — optional enrichment worker (async fact extraction), more embedder/store adapters.
 
 See [`docs/adr/`](docs/adr/) for architectural decisions, including [why we dropped mem0](docs/adr/0001-drop-mem0.md).
 
