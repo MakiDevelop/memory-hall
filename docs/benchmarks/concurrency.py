@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: I001, E501
 from __future__ import annotations
 
 import argparse

@@ -9,6 +9,7 @@ hall. Replace them with ideal-match pairs from your own data.
 
 Dependency: stdlib only.
 """
+# ruff: noqa: E501, S310
 from __future__ import annotations
 
 import json
