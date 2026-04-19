@@ -7,6 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /bin/uv
 
 # Use /app as workdir so venv shebangs point to /app/.venv/bin/python,
@@ -19,6 +24,8 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra ollama 2>/dev/null || \
     uv sync --no-dev --extra ollama
+
+RUN /app/.venv/bin/pip install --no-binary=sqlite-vec --force-reinstall sqlite-vec==0.1.6
 
 
 FROM python:3.12-slim AS runtime
