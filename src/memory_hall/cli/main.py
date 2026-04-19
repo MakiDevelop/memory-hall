@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from rich.table import Table
 
 from memory_hall.config import Settings
 from memory_hall.server.app import create_app
+from memory_hall.storage.sqlite_store import SqliteStore
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
@@ -171,3 +173,46 @@ def tail(
                 seen.add(item["entry_id"])
                 console.print(f"[{item['created_at']}] {item['entry_id']} {item['content']}")
             time.sleep(interval_s)
+
+
+@app.command("reindex-fts")
+def reindex_fts(
+    tenant_id: str | None = typer.Option(default=None),
+    batch_size: int = typer.Option(default=500, min=1, max=5000),
+    database_path: Path | None = typer.Option(default=None),
+) -> None:
+    asyncio.run(
+        _reindex_fts(
+            tenant_id=tenant_id,
+            batch_size=batch_size,
+            database_path=database_path,
+        )
+    )
+
+
+async def _reindex_fts(
+    *,
+    tenant_id: str | None,
+    batch_size: int,
+    database_path: Path | None,
+) -> None:
+    settings = _settings()
+    if database_path is not None:
+        settings.database_path = database_path
+    active_tenant_id = tenant_id or settings.default_tenant_id
+    store = SqliteStore(settings.database_path)
+    await store.open()
+    try:
+        entries = await store.list_entries(active_tenant_id, limit=None)
+        entries.reverse()
+        scanned = 0
+        reindexed = 0
+        for offset in range(0, len(entries), batch_size):
+            batch = entries[offset : offset + batch_size]
+            scanned += len(batch)
+            reindexed += await store.reindex_fts_entries(batch)
+            console.print(
+                f"tenant={active_tenant_id} scanned={scanned}/{len(entries)} reindexed={reindexed}"
+            )
+    finally:
+        await store.close()
