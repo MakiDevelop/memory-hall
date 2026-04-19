@@ -45,6 +45,7 @@ from memory_hall.storage.vector_store import SqliteVecStore, VectorStore
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _RRF_K = 60
 _BACKGROUND_REINDEX_INTERVAL_S = 120.0
+_REINDEX_EMBED_BATCH_SIZE = 16
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +421,7 @@ class MemoryHallRuntime:
         else:
             all_entries = await self.storage.list_entries(job.tenant_id, limit=None)
         scanned = len(all_entries)
+        candidates: list[Entry] = []
         embedded_count = 0
         pending_count = 0
         for entry in all_entries:
@@ -433,11 +435,39 @@ class MemoryHallRuntime:
                     )
                 if not needs_reindex:
                     continue
+            candidates.append(entry)
+        for offset in range(0, len(candidates), _REINDEX_EMBED_BATCH_SIZE):
+            embedded, pending = await self._embed_reindex_batch(
+                candidates[offset : offset + _REINDEX_EMBED_BATCH_SIZE]
+            )
+            embedded_count += embedded
+            pending_count += pending
+        return ReindexResponse(scanned=scanned, embedded=embedded_count, pending=pending_count)
+
+    async def _embed_reindex_batch(self, entries: list[Entry]) -> tuple[int, int]:
+        if not entries:
+            return (0, 0)
+        try:
+            vectors = await asyncio.wait_for(
+                asyncio.to_thread(self.embedder.embed_batch, [entry.content for entry in entries]),
+                timeout=self.settings.embed_timeout_s * len(entries),
+            )
+            if len(vectors) != len(entries):
+                raise ValueError("embed_batch returned mismatched vector count")
+        except Exception:
+            embedded_count = 0
+            pending_count = 0
+            for entry in entries:
+                try:
+                    embedded = await self._embed_reindex_entry(entry)
+                    embedded_count += int(embedded)
+                except Exception:
+                    pending_count += 1
+            return (embedded_count, pending_count)
+        embedded_count = 0
+        pending_count = 0
+        for entry, vector in zip(entries, vectors, strict=True):
             try:
-                vector = await asyncio.wait_for(
-                    asyncio.to_thread(self.embedder.embed, entry.content),
-                    timeout=self.settings.embed_timeout_s,
-                )
                 await asyncio.to_thread(
                     self.vector_store.upsert,
                     entry.tenant_id,
@@ -453,7 +483,26 @@ class MemoryHallRuntime:
                 embedded_count += 1
             except Exception:
                 pending_count += 1
-        return ReindexResponse(scanned=scanned, embedded=embedded_count, pending=pending_count)
+        return (embedded_count, pending_count)
+
+    async def _embed_reindex_entry(self, entry: Entry) -> bool:
+        vector = await asyncio.wait_for(
+            asyncio.to_thread(self.embedder.embed, entry.content),
+            timeout=self.settings.embed_timeout_s,
+        )
+        await asyncio.to_thread(
+            self.vector_store.upsert,
+            entry.tenant_id,
+            entry.entry_id,
+            vector,
+        )
+        await self.storage.update_sync_status(
+            entry.tenant_id,
+            entry.entry_id,
+            SYNC_EMBEDDED,
+            utc_now(),
+        )
+        return True
 
     def _require_queue(self) -> asyncio.Queue[WriteJob | LinkJob | ReindexJob | None]:
         if self._queue is None:
