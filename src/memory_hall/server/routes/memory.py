@@ -82,7 +82,7 @@ async def list_entries(
     agent_id: str | None = None,
     type: list[str] | None = Query(default=None),
     tags: list[str] | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=1000),
     cursor: str | None = None,
 ) -> ListEntriesResponse:
     runtime = request.app.state.runtime

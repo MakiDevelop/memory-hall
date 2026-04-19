@@ -146,7 +146,7 @@ def get(
 
 @app.command()
 def tail(
-    limit: int = typer.Option(default=20, min=1, max=200),
+    limit: int = typer.Option(default=20, min=1, max=1000),
     interval_s: float = typer.Option(default=2.0, min=0.2),
     namespace: list[str] | None = typer.Option(default=None),
     agent_id: str | None = typer.Option(default=None),

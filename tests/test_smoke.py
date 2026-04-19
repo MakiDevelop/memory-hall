@@ -56,6 +56,17 @@ async def test_health_reads_cached_status_without_reprobing_embedder(app_factory
 
 
 @pytest.mark.asyncio
+async def test_list_endpoint_accepts_limit_1000_and_rejects_1001(app_factory) -> None:
+    app = app_factory()
+    async with client_for_app(app) as client:
+        response = await client.get("/v1/memory", params={"limit": 1000})
+        assert response.status_code == 200
+
+        response = await client.get("/v1/memory", params={"limit": 1001})
+        assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_write_rejects_oversized_content(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     settings.max_content_bytes = 8
