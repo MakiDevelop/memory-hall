@@ -164,6 +164,7 @@ class SqliteVecStore:
                 "sqlite_vec extension load failed (%s); falling back to brute-force", exc
             )
             return False
+        logger.info("sqlite_vec vec0 extension loaded")
         return True
 
     def _init_vec0_table(self, connection: sqlite3.Connection) -> None:

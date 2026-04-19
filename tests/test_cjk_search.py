@@ -47,3 +47,4 @@ async def test_short_cjk_query_prefers_fts_match(app_factory) -> None:
     assert blocked.status_code == 201
     payload = response.json()
     assert payload["results"][0]["entry"]["content"].startswith("最近又撞牆")
+    assert payload["results"][0]["score_breakdown"]["bm25"] > 0

@@ -6,6 +6,7 @@ Fires 10 simultaneous write requests with identical content. Verifies:
 - Exactly 1 response has created=True, 9 have created=False
 - No HTTP 500, no unique-constraint error
 """
+# ruff: noqa: S310
 from __future__ import annotations
 
 import json

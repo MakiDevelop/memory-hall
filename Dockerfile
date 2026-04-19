@@ -20,6 +20,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra ollama 2>/dev/null || \
     uv sync --no-dev --extra ollama
 
+RUN /app/.venv/bin/python -c "\
+import sqlite3, sqlite_vec; \
+c = sqlite3.connect(':memory:'); \
+c.enable_load_extension(True); \
+sqlite_vec.load(c); \
+v = c.execute('SELECT vec_version()').fetchone()[0]; \
+print(f'vec0 OK, version={v}')"
+
 
 FROM python:3.12-slim AS runtime
 

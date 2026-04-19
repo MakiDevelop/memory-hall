@@ -9,9 +9,12 @@ hall. Replace them with ideal-match pairs from your own data.
 
 Dependency: stdlib only.
 """
+# ruff: noqa: E501, S310
 from __future__ import annotations
 
 import json
+import math
+import time
 import urllib.request
 
 BASE_URL = "http://localhost:9100"
@@ -32,7 +35,7 @@ PAIRS: list[dict[str, str]] = [
 ]
 
 
-def search(query: str, mode: str = "hybrid", k: int = 3) -> list[str]:
+def search(query: str, mode: str = "hybrid", k: int = 3) -> tuple[list[str], float]:
     body = json.dumps({
         "query": query,
         "limit": k,
@@ -45,16 +48,20 @@ def search(query: str, mode: str = "hybrid", k: int = 3) -> list[str]:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    started = time.perf_counter()
     with urllib.request.urlopen(req, timeout=30) as resp:
         d = json.loads(resp.read())
-    return [r["entry"]["entry_id"] for r in d.get("results", [])]
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    return [r["entry"]["entry_id"] for r in d.get("results", [])], elapsed_ms
 
 
 def bench(mode: str) -> float:
     hits = 0
+    latencies_ms: list[float] = []
     print(f"\n=== mode={mode} ===")
     for p in PAIRS:
-        top3 = search(p["q"], mode=mode, k=3)
+        top3, elapsed_ms = search(p["q"], mode=mode, k=3)
+        latencies_ms.append(elapsed_ms)
         hit = p["expect"] in top3
         if hit:
             hits += 1
@@ -62,8 +69,22 @@ def bench(mode: str) -> float:
         mark = "✓" if hit else "✗"
         print(f"  [{mark}] pos={str(pos):>4} | q={p['q']!r:40} | {p['note']}")
     score = hits / len(PAIRS)
-    print(f"Hit@3 ({mode}): {hits}/{len(PAIRS)} = {score * 100:.0f}%")
+    p50 = _percentile(latencies_ms, 50)
+    p95 = _percentile(latencies_ms, 95)
+    p99 = _percentile(latencies_ms, 99)
+    print(
+        f"Hit@3 ({mode}): {hits}/{len(PAIRS)} = {score * 100:.0f}%"
+        f" | latency p50/p95/p99 = {p50:.1f}/{p95:.1f}/{p99:.1f} ms"
+    )
     return score
+
+
+def _percentile(samples: list[float], percentile: int) -> float:
+    if not samples:
+        return 0.0
+    ordered = sorted(samples)
+    index = max(0, math.ceil((percentile / 100) * len(ordered)) - 1)
+    return ordered[index]
 
 
 if __name__ == "__main__":

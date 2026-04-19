@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -15,7 +16,9 @@ from rich.json import JSON
 from rich.table import Table
 
 from memory_hall.config import Settings
+from memory_hall.models import encode_cursor
 from memory_hall.server.app import create_app
+from memory_hall.storage.sqlite_store import SqliteStore
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
@@ -143,7 +146,7 @@ def get(
 
 @app.command()
 def tail(
-    limit: int = typer.Option(default=20, min=1, max=200),
+    limit: int = typer.Option(default=20, min=1, max=1000),
     interval_s: float = typer.Option(default=2.0, min=0.2),
     namespace: list[str] | None = typer.Option(default=None),
     agent_id: str | None = typer.Option(default=None),
@@ -171,3 +174,51 @@ def tail(
                 seen.add(item["entry_id"])
                 console.print(f"[{item['created_at']}] {item['entry_id']} {item['content']}")
             time.sleep(interval_s)
+
+
+@app.command("reindex-fts")
+def reindex_fts(
+    tenant_id: str | None = typer.Option(default=None),
+    batch_size: int = typer.Option(default=500, min=1, max=5000),
+    database_path: Path | None = typer.Option(default=None),
+) -> None:
+    asyncio.run(
+        _reindex_fts(
+            tenant_id=tenant_id,
+            batch_size=batch_size,
+            database_path=database_path,
+        )
+    )
+
+
+async def _reindex_fts(
+    *,
+    tenant_id: str | None,
+    batch_size: int,
+    database_path: Path | None,
+) -> None:
+    settings = _settings()
+    if database_path is not None:
+        settings.database_path = database_path
+    active_tenant_id = tenant_id or settings.default_tenant_id
+    store = SqliteStore(settings.database_path)
+    await store.open()
+    try:
+        scanned = 0
+        reindexed = 0
+        cursor: str | None = None
+        while True:
+            batch = await store.list_entries(
+                active_tenant_id,
+                limit=batch_size,
+                cursor=cursor,
+            )
+            if not batch:
+                break
+            scanned += len(batch)
+            reindexed += await store.reindex_fts_entries(batch)
+            tail = batch[-1]
+            cursor = encode_cursor(tail.created_at, tail.entry_id)
+            console.print(f"tenant={active_tenant_id} scanned={scanned} reindexed={reindexed}")
+    finally:
+        await store.close()

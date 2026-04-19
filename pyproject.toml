@@ -26,7 +26,8 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "httpx>=0.27",
-    "sqlite-vec==0.1.6",
+    "jieba>=0.42.1",
+    "sqlite-vec==0.1.9",
     "typer>=0.13",
     "rich>=13.9",
     "ulid-py>=1.1",
@@ -34,7 +35,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sqlite-vec = ["sqlite-vec>=0.1.6"]
+sqlite-vec = ["sqlite-vec==0.1.9"]
 qdrant = ["qdrant-client>=1.12"]
 ollama = ["ollama>=0.4"]
 openai = ["openai>=1.50"]

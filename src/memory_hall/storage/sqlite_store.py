@@ -70,13 +70,7 @@ class SqliteStore:
                 INSERT INTO entries_fts (entry_id, tenant_id, content, summary, tags)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    entry.entry_id,
-                    entry.tenant_id,
-                    entry.content,
-                    entry.summary or "",
-                    " ".join(entry.tags),
-                ),
+                (entry.entry_id, entry.tenant_id, *self._build_fts_document(entry)),
             )
             await connection.commit()
             return InsertOutcome(entry=entry, created=True)
@@ -213,7 +207,10 @@ class SqliteStore:
             until=None,
             cursor=None,
         )
-        params.insert(0, self._normalize_fts_query(query))
+        normalized_query = self._normalize_fts_query(query)
+        if not normalized_query:
+            return []
+        params.insert(0, normalized_query)
         params.append(limit)
         sql = """
             SELECT e.entry_id, bm25(entries_fts) AS bm25_score
@@ -361,6 +358,21 @@ class SqliteStore:
             "sync_status_counts": sync_status_counts,
             "content_hash_collisions": collisions,
         }
+
+    async def reindex_fts_entries(self, entries: list[Entry]) -> int:
+        if not entries:
+            return 0
+        connection = await self._require_writer_connection()
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            reindexed = 0
+            for entry in entries:
+                reindexed += await self._refresh_fts_row(connection, entry)
+            await connection.commit()
+            return reindexed
+        except Exception:
+            await connection.rollback()
+            raise
 
     async def _open_writer_connection(self) -> None:
         self._writer_connection = await aiosqlite.connect(self.database_path)
@@ -514,14 +526,87 @@ class SqliteStore:
 
     @staticmethod
     def _normalize_fts_query(query: str) -> str:
-        tokens = [token.replace('"', " ").strip() for token in query.split() if token.strip()]
-        if not tokens:
-            tokens = [query.replace('"', " ").strip()]
+        tokens = SqliteStore._tokenize_fts_text(query)
         return " AND ".join(f'"{token}"' for token in tokens if token)
 
     @staticmethod
     def _normalize_bm25(score: float) -> float:
         return 1.0 / (1.0 + abs(score))
+
+    @classmethod
+    def _build_fts_document(cls, entry: Entry) -> tuple[str, str, str]:
+        return (
+            cls._tokenize_fts_value(entry.content),
+            cls._tokenize_fts_value(entry.summary or ""),
+            cls._tokenize_fts_value(" ".join(entry.tags)),
+        )
+
+    @classmethod
+    def _tokenize_fts_value(cls, text: str) -> str:
+        return " ".join(cls._tokenize_fts_text(text))
+
+    @classmethod
+    def _tokenize_fts_text(cls, text: str) -> list[str]:
+        import jieba
+
+        tokens: list[str] = []
+        for raw_token in jieba.cut(text):
+            token = raw_token.replace('"', " ").strip()
+            if not token or not any(char.isalnum() for char in token):
+                continue
+            tokens.append(token)
+        seen = set(tokens)
+        base_tokens = list(tokens)
+        for left_token, right_token in zip(base_tokens, base_tokens[1:], strict=False):
+            if cls._is_single_cjk_token(left_token) and cls._is_single_cjk_token(right_token):
+                bigram = left_token + right_token
+                if bigram not in seen:
+                    tokens.append(bigram)
+                    seen.add(bigram)
+        return tokens
+
+    @staticmethod
+    def _is_single_cjk_token(token: str) -> bool:
+        return len(token) == 1 and SqliteStore._is_cjk_char(token)
+
+    @staticmethod
+    def _is_cjk_char(char: str) -> bool:
+        codepoint = ord(char)
+        return (
+            0x3400 <= codepoint <= 0x4DBF
+            or 0x4E00 <= codepoint <= 0x9FFF
+            or 0xF900 <= codepoint <= 0xFAFF
+        )
+
+    async def _refresh_fts_row(self, connection: aiosqlite.Connection, entry: Entry) -> int:
+        content, summary, tags = self._build_fts_document(entry)
+        cursor = await connection.execute(
+            """
+            SELECT content, summary, tags
+            FROM entries_fts
+            WHERE tenant_id = ? AND entry_id = ?
+            """,
+            (entry.tenant_id, entry.entry_id),
+        )
+        rows = await cursor.fetchall()
+        if len(rows) == 1 and (
+            rows[0]["content"],
+            rows[0]["summary"],
+            rows[0]["tags"],
+        ) == (content, summary, tags):
+            return 0
+        await connection.execute(
+            "DELETE FROM entries_fts WHERE tenant_id = ? AND entry_id = ?",
+            (entry.tenant_id, entry.entry_id),
+        )
+        await connection.execute(
+            """
+            INSERT INTO entries_fts (entry_id, tenant_id, content, summary, tags)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (entry.entry_id, entry.tenant_id, content, summary, tags),
+        )
+        return 1
 
     @staticmethod
     async def _fetch_count(connection: aiosqlite.Connection, sql: str) -> int:
