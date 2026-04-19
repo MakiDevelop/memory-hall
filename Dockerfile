@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra ollama 2>/dev/null || \
     uv sync --no-dev --extra ollama
 
-RUN uv pip install --python /app/.venv/bin/python --reinstall --no-binary sqlite-vec 'sqlite-vec==0.1.6'
+RUN /app/.venv/bin/pip install --no-binary=sqlite-vec --force-reinstall sqlite-vec==0.1.6
 
 
 FROM python:3.12-slim AS runtime
