@@ -8,7 +8,7 @@ services:
     build: .
     image: memory-hall:0.1.0
     ports:
-      - "9000:9000"
+      - "9100:9000"
     environment:
       MH_HOST: 0.0.0.0
       MH_PORT: "9000"
