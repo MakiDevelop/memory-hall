@@ -16,6 +16,10 @@ services:
       MH_VECTOR_DATABASE_PATH: /data/memory-hall-vectors.sqlite3
       MH_OLLAMA_BASE_URL: ${MH_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       MH_OLLAMA_MODEL: bge-m3
+      # Embedder selection: "ollama" (default, backward compat) or "http" (dedicated bge-m3 HTTP service)
+      MH_EMBEDDER_KIND: ${MH_EMBEDDER_KIND:-ollama}
+      MH_EMBED_BASE_URL: ${MH_EMBED_BASE_URL:-}
+      MH_HEALTH_EMBED_TIMEOUT_S: ${MH_HEALTH_EMBED_TIMEOUT_S:-3.0}
     volumes:
       - mh-data:/data
     depends_on:
