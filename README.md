@@ -180,6 +180,20 @@ Run the engine on one machine, put the embedder on another. My home lab:
 
 Primary dies → manually `docker start memory-hall` on standby. Not true HA, but 80% of real HA value for personal / home setups with zero maintenance overhead.
 
+### When your Ollama is also serving LLMs: use `HttpEmbedder`
+
+If the Ollama instance that memory-hall embeds against is *also* serving LLM traffic (e.g. you share one DGX Spark Ollama between an agent chat stack and memory-hall), `bge-m3` can get starved by the LLM queue and `/v1/health` will flap between `ok` and `degraded`. Hit that once (hard) in production — see [`docs/operations/incident-2026-04-20-embed-queue.md`](docs/operations/incident-2026-04-20-embed-queue.md).
+
+Workaround since 0.2.1: point memory-hall at a **dedicated embed service** (any service speaking `POST /embed {"texts": [...]}` → `{"dense_vecs": [...]}`) via:
+
+```yaml
+environment:
+  MH_EMBEDDER_KIND: http
+  MH_EMBED_BASE_URL: http://<embed-host>:8790
+```
+
+Rationale in [ADR 0006](docs/adr/0006-http-embedder-embed-queue-isolation.md). The default `MH_EMBEDDER_KIND=ollama` is unchanged — existing deployments do nothing.
+
 ---
 
 ## What v0.2 is / isn't (honest expectations)
@@ -204,7 +218,8 @@ Primary dies → manually `docker start memory-hall` on standby. Not true HA, bu
 ## Status & roadmap
 
 - **v0.1** (2026-04-18) — engine shipped. Hit@3 hybrid=60% / lexical=60% / semantic=0% on 177-entry CJK corpus. Durability + concurrency verified. See [results-2026-04-18.md](docs/benchmarks/results-2026-04-18.md).
-- **v0.2** (2026-04-19, **current**) — jieba CJK tokenizer (pure-CJK queries now lexically hit: BM25 0 → 0.26), latency metrics in benchmark, cursor-stream reindex, `embed_batch` for backlog throughput, Docker sqlite-vec upgraded to 0.1.9 (upstream [#251](https://github.com/asg017/sqlite-vec/issues/251) ARM64 ELF32 bug), build-time `vec0` smoke test. See [results-2026-04-19.md](docs/benchmarks/results-2026-04-19.md).
+- **v0.2** (2026-04-19) — jieba CJK tokenizer (pure-CJK queries now lexically hit: BM25 0 → 0.26), latency metrics in benchmark, cursor-stream reindex, `embed_batch` for backlog throughput, Docker sqlite-vec upgraded to 0.1.9 (upstream [#251](https://github.com/asg017/sqlite-vec/issues/251) ARM64 ELF32 bug), build-time `vec0` smoke test. See [results-2026-04-19.md](docs/benchmarks/results-2026-04-19.md).
+- **v0.2.1** (2026-04-20, **current**) — `HttpEmbedder` backend (ADR 0006) for isolating the embed path from shared-Ollama LLM queues; `health_embed_timeout_s` separated from write-path timeout; `docker-compose.yml` default host port corrected to 9100. See [CHANGELOG](CHANGELOG.md).
 - **v0.3** — MCP server, Qdrant adapter, docker compose for self-host, optional auth. (Let the use cases find us first.)
 - **v1.0** — public release, docs site, example integrations.
 - **v2.0** — Postgres adapter for replica/HA, more embedder/store adapters.
