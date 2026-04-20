@@ -94,3 +94,30 @@ For production with zero-downtime needs, see v0.2 roadmap — not supported in v
 - **Cold standby only**: running primary and backup simultaneously will split-brain the writes.
 - **No automatic failover**: manual DNS / config switch.
 - **No encryption at rest**: SQLite files are plaintext. Use disk-level encryption (FileVault / LUKS) if your data warrants it.
+
+## Deploy footguns (learned the hard way)
+
+See [`docs/operations/incident-2026-04-20-embed-queue.md`](operations/incident-2026-04-20-embed-queue.md) for the full story. Short version:
+
+### Don't embed through a shared Ollama
+
+If the same Ollama instance serves large LLM clients, `bge-m3` will starve. Either point memory-hall at a dedicated embed service (`MH_EMBEDDER_KIND=http` + `MH_EMBED_BASE_URL=...`) or keep Ollama exclusive to embeddings. See [ADR 0006](adr/0006-http-embedder-embed-queue-isolation.md).
+
+### Back up before `docker compose up --force-recreate`
+
+If your existing deployment was created with plain `docker run`, compose may replace your data volume on recreate. Always snapshot first:
+
+```bash
+docker run --rm -v memory-hall_mh-data:/backup alpine \
+    tar czf - /backup > memhall-backup-$(date +%F).tar.gz
+```
+
+Or — and this is the pattern this doc has recommended since v0.1 — use a **bind mount** (`-v ~/data/memory-hall:/data`) instead of a named volume. Bind mounts are transparent, trivially backed up via `rsync`, and compose cannot silently swap them.
+
+### macOS-specific: keychain must be unlocked for `docker compose build`
+
+Docker Desktop's credential helper requires GUI keychain access. `ssh` into a Mac to build and you'll see `keychain cannot be accessed because the current session does not allow user interaction`. Run `security -v unlock-keychain ~/Library/Keychains/login.keychain-db` in an interactive session first, or build elsewhere and `docker save | docker load` across.
+
+### Port alignment
+
+This repo's `docker-compose.yml` exposes `9100:9000` (host:container). If your existing deployment was started with a different host port, callers coded against the old port will break on the first `force-recreate`. Grep your agent stack for the literal port number before redeploying.
