@@ -55,6 +55,7 @@ def build_settings(tmp_path: Path, tenant_id: str = "default", dim: int = 8) -> 
         database_path=tmp_path / "memory-hall.sqlite3",
         vector_database_path=tmp_path / "memory-hall-vectors.sqlite3",
         vector_dim=dim,
+        health_embed_timeout_s=1.0,
         default_tenant_id=tenant_id,
         request_timeout_s=1.0,
     )

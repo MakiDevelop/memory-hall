@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from memory_hall.config import Settings
+from memory_hall.embedder.http_embedder import HttpEmbedder
 from memory_hall.embedder.interface import Embedder
 from memory_hall.embedder.ollama_embedder import OllamaEmbedder
 from memory_hall.models import (
@@ -315,7 +316,7 @@ class MemoryHallRuntime:
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(self.embedder.embed, "healthcheck"),
-                timeout=min(1.0, self.settings.embed_timeout_s),
+                timeout=self.settings.health_embed_timeout_s,
             )
         except Exception:
             status = "degraded"
@@ -593,12 +594,25 @@ def build_runtime(
         active_settings.vector_database_path,
         dim=active_settings.vector_dim,
     )
-    active_embedder = embedder or OllamaEmbedder(
-        base_url=active_settings.ollama_base_url,
-        model=active_settings.ollama_model,
-        timeout_s=active_settings.embed_timeout_s,
-        dim=active_settings.vector_dim,
-    )
+    embed_dim = active_settings.embed_dim or active_settings.vector_dim
+    if embedder is None:
+        if active_settings.embedder_kind == "http":
+            if not active_settings.embed_base_url:
+                raise ValueError("embed_base_url is required when embedder_kind='http'")
+            active_embedder = HttpEmbedder(
+                base_url=active_settings.embed_base_url,
+                timeout_s=max(active_settings.embed_timeout_s, 10.0),
+                dim=embed_dim,
+            )
+        else:
+            active_embedder = OllamaEmbedder(
+                base_url=active_settings.ollama_base_url,
+                model=active_settings.ollama_model,
+                timeout_s=active_settings.embed_timeout_s,
+                dim=embed_dim,
+            )
+    else:
+        active_embedder = embedder
     return MemoryHallRuntime(
         settings=active_settings,
         storage=active_storage,
