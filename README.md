@@ -194,6 +194,10 @@ environment:
 
 Rationale in [ADR 0006](docs/adr/0006-http-embedder-embed-queue-isolation.md). The default `MH_EMBEDDER_KIND=ollama` is unchanged — existing deployments do nothing.
 
+### Opt-in token auth
+
+Set `MH_API_TOKEN` to require `Authorization: Bearer <token>` on all `/v1/memory/*` endpoints (`/v1/health` stays public). Leave unset for dev. Rationale + when to upgrade to HMAC in [ADR 0007](docs/adr/0007-minimal-token-auth.md).
+
 ---
 
 ## What v0.2 is / isn't (honest expectations)
