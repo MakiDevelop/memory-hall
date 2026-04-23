@@ -655,8 +655,10 @@ def create_app(
         # in-image HEALTHCHECK probe it without credentials.
         if request.url.path.rstrip("/") == "/v1/health":
             return await call_next(request)
-        # Backward compat: when api_token is unset, auth is disabled.
-        if active_settings.api_token is None:
+        # Backward compat: when api_token is unset (None) or empty string
+        # (docker-compose `${MH_API_TOKEN:-}` expands to "" when host env is
+        # unset — pydantic reads that as "", not None), auth is disabled.
+        if not active_settings.api_token:
             return await call_next(request)
         header = request.headers.get("authorization", "")
         prefix = "Bearer "

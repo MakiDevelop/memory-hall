@@ -28,6 +28,18 @@ async def test_auth_disabled_allows_unauthenticated_write(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_auth_empty_string_token_also_disables_auth(tmp_path: Path) -> None:
+    # docker-compose `${MH_API_TOKEN:-}` expands to "" when host env is unset.
+    # pydantic reads that as "" (not None). Middleware must treat "" like None.
+    settings = build_settings(tmp_path)
+    settings.api_token = ""
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post("/v1/memory/write", json=_write_payload())
+    assert response.status_code in (200, 201, 202)
+
+
+@pytest.mark.asyncio
 async def test_auth_enabled_missing_header_returns_401(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     settings.api_token = "secret-token-abc"
