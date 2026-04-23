@@ -114,6 +114,31 @@ docker run --rm -v memory-hall_mh-data:/backup alpine \
 
 Or — and this is the pattern this doc has recommended since v0.1 — use a **bind mount** (`-v ~/data/memory-hall:/data`) instead of a named volume. Bind mounts are transparent, trivially backed up via `rsync`, and compose cannot silently swap them.
 
+As of post-0.2, `docker-compose.yml` matches this doc: the mount is a bind driven by `MEMHALL_DATA_DIR` (default `./mh-data` inside the repo). For production, set it to an absolute path (e.g. `MEMHALL_DATA_DIR=~/data/memory-hall`).
+
+If you have an existing deployment still on a named `mh-data` volume, migrate before recreating:
+
+```bash
+# 1. Stop the container
+docker compose stop memory-hall
+
+# 2. Copy named-volume contents to the target bind-mount host path
+mkdir -p ~/data/memory-hall
+docker run --rm \
+    -v memory-hall_mh-data:/src \
+    -v ~/data/memory-hall:/dst \
+    alpine sh -c 'cp -a /src/. /dst/'
+
+# 3. Export the env var and bring it back up (compose now binds ~/data/memory-hall)
+export MEMHALL_DATA_DIR=~/data/memory-hall
+docker compose up -d memory-hall
+
+# 4. Verify entry count matches before you remove the old named volume
+curl -s http://localhost:9100/v1/memory | jq '.total'
+# Only after this matches expectation:
+# docker volume rm memory-hall_mh-data
+```
+
 ### macOS-specific: keychain must be unlocked for `docker compose build`
 
 Docker Desktop's credential helper requires GUI keychain access. `ssh` into a Mac to build and you'll see `keychain cannot be accessed because the current session does not allow user interaction`. Run `security -v unlock-keychain ~/Library/Keychains/login.keychain-db` in an interactive session first, or build elsewhere and `docker save | docker load` across.

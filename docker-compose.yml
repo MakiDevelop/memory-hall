@@ -21,7 +21,11 @@ services:
       MH_EMBED_BASE_URL: ${MH_EMBED_BASE_URL:-}
       MH_HEALTH_EMBED_TIMEOUT_S: ${MH_HEALTH_EMBED_TIMEOUT_S:-3.0}
     volumes:
-      - mh-data:/data
+      # Bind mount by default. Compose created a fresh empty named volume during a
+      # `docker run` → `docker compose up` migration in the 2026-04-20 incident;
+      # bind mount is transparent and compose cannot silently swap it.
+      # Override MEMHALL_DATA_DIR for production (e.g. ~/data/memory-hall).
+      - ${MEMHALL_DATA_DIR:-./mh-data}:/data
     depends_on:
       - qdrant
     restart: unless-stopped
@@ -44,6 +48,5 @@ services:
   #   restart: unless-stopped
 
 volumes:
-  mh-data:
   qdrant-data:
   # ollama-data:
