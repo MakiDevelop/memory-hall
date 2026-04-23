@@ -9,6 +9,8 @@ Numbered, immutable records of significant design choices. Append new entries; n
 | [0003](0003-engine-library-vs-deployment-platform.md) | memory-hall (engine library) vs memory-gateway (deployment platform) | Accepted (2026-04-18) |
 | [0004](0004-standardization-stance.md) | Standardization stance: implementation first, spec later | Accepted (2026-04-18) |
 | [0005](0005-v0.2-minimum-viable-contract.md) | v0.2 Minimum Viable Contract (production-facing freeze) | Accepted (2026-04-19) |
+| [0006](0006-http-embedder-embed-queue-isolation.md) | HttpEmbedder: embed path isolation from LLM queue | Accepted (2026-04-20) |
+| [0007](0007-minimal-token-auth.md) | Minimal Token auth (single-tenant deployment shim) | Accepted (2026-04-23) |
 
 ## Format
 

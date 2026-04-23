@@ -16,6 +16,13 @@ memory-hall has **two operating modes** depending on how it's deployed:
 - `tenant_id` is always `"default"`
 - Suitable for: single-user local use, integration testing, examples
 
+### Minimal token mode (single-tenant deployment)
+When `MH_API_TOKEN` is set, every request (except `GET /v1/health`) must carry:
+```
+Authorization: Bearer <MH_API_TOKEN>
+```
+Missing or wrong token → `401`. `/v1/health` stays public so external uptime probes and the in-image HEALTHCHECK don't need credentials. Rationale and scope limits in [ADR 0007](adr/0007-minimal-token-auth.md). This is **not** a replacement for the production HMAC mode below — it's a local-network deployment shim.
+
 ### Production mode (when deployed via `memory-gateway`)
 All endpoints require:
 - `Authorization: HMAC <key-id>:<signature>` header

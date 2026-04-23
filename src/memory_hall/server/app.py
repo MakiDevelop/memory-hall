@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import random
@@ -647,6 +648,30 @@ def create_app(
             await runtime.stop()
 
     app = FastAPI(title="memory-hall", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def require_api_token(request: Request, call_next):
+        # /v1/health is intentionally public — external uptime monitors and the
+        # in-image HEALTHCHECK probe it without credentials.
+        if request.url.path.rstrip("/") == "/v1/health":
+            return await call_next(request)
+        # Backward compat: when api_token is unset, auth is disabled.
+        if active_settings.api_token is None:
+            return await call_next(request)
+        header = request.headers.get("authorization", "")
+        prefix = "Bearer "
+        if not header.startswith(prefix):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "missing bearer token"},
+            )
+        received = header[len(prefix):]
+        if not hmac.compare_digest(received, active_settings.api_token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "invalid token"},
+            )
+        return await call_next(request)
 
     @app.middleware("http")
     async def enforce_write_content_limit(request: Request, call_next):

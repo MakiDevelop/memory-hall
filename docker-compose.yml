@@ -20,6 +20,8 @@ services:
       MH_EMBEDDER_KIND: ${MH_EMBEDDER_KIND:-ollama}
       MH_EMBED_BASE_URL: ${MH_EMBED_BASE_URL:-}
       MH_HEALTH_EMBED_TIMEOUT_S: ${MH_HEALTH_EMBED_TIMEOUT_S:-3.0}
+      # Auth: leave empty for no-auth (dev/standalone). Set for production.
+      MH_API_TOKEN: ${MH_API_TOKEN:-}
     volumes:
       # Bind mount by default. Compose created a fresh empty named volume during a
       # `docker run` → `docker compose up` migration in the 2026-04-20 incident;
