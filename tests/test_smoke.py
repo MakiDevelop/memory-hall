@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -38,6 +39,8 @@ async def test_health_returns_ok(app_factory) -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["storage"] == "ok"
+    assert payload["last_error"] is None
+    assert payload["last_success_at"] is not None
 
 
 @pytest.mark.asyncio
@@ -49,6 +52,7 @@ async def test_health_returns_degraded_when_embedder_unreachable(app_factory) ->
     payload = response.json()
     assert payload["status"] == "degraded"
     assert payload["embedder"] == "degraded"
+    assert payload["last_error"] is not None
 
 
 @pytest.mark.asyncio
@@ -81,6 +85,32 @@ async def test_health_uses_health_embed_timeout(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["status"] == "degraded"
     assert payload["embedder"] == "degraded"
+    assert payload["last_error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_health_logs_subcheck_error_and_exposes_last_error(app_factory, caplog) -> None:
+    app = app_factory()
+    async with client_for_app(app) as client:
+        app.state.settings.health_embed_timeout_s = 0.05
+        app.state.runtime._health_cache_ttl_s = 0.0
+        app.state.runtime.embedder = SlowEmbedder(
+            sleep_s=0.2,
+            dim=app.state.settings.vector_dim,
+        )
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            response = await client.get("/v1/health")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["last_success_at"] is not None
+    assert payload["last_error"] is not None
+    assert "embedder" in payload["last_error"]
+    assert any(
+        "health sub-check failed component=embedder" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

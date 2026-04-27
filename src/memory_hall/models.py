@@ -237,3 +237,5 @@ class HealthResponse(BaseModel):
     storage: str
     vector_store: str
     embedder: str
+    last_success_at: datetime | None = None
+    last_error: str | None = None

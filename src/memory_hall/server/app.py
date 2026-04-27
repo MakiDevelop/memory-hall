@@ -51,6 +51,7 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _RRF_K = 60
 _BACKGROUND_REINDEX_INTERVAL_S = 120.0
 _HEALTH_PROBE_INTERVAL_S = 30.0
+_HEALTH_CACHE_TTL_S = 60.0
 _REINDEX_EMBED_BATCH_SIZE = 16
 _EMBED_FAILURE_LIMIT = 5
 _MAX_EMBED_ERROR_LENGTH = 500
@@ -101,11 +102,16 @@ class MemoryHallRuntime:
         self._background_reindex_interval_s = _BACKGROUND_REINDEX_INTERVAL_S
         self._background_reindex_jitter_s = min(15.0, _BACKGROUND_REINDEX_INTERVAL_S * 0.1)
         self._health_probe_interval_s = _HEALTH_PROBE_INTERVAL_S
+        self._health_cache_ttl_s = _HEALTH_CACHE_TTL_S
+        self._health_cache_checked_at = None
+        self._health_last_success_at = None
         self._health_cache = HealthResponse(
             status="degraded",
             storage="degraded",
             vector_store="degraded",
             embedder="degraded",
+            last_success_at=None,
+            last_error="health cache not initialized",
         )
 
     async def start(self) -> None:
@@ -314,6 +320,8 @@ class MemoryHallRuntime:
         )
 
     async def health(self) -> HealthResponse:
+        if self._health_cache_stale():
+            await self._refresh_health_cache()
         return self._health_cache
 
     async def _refresh_health_cache(self) -> None:
@@ -321,36 +329,47 @@ class MemoryHallRuntime:
         storage_status = "ok"
         vector_store_status = "ok"
         embedder_status = "ok"
+        errors: list[str] = []
+        checked_at = utc_now()
         try:
             await self.storage.healthcheck()
-        except Exception:
+        except Exception as exc:
             status = "degraded"
             storage_status = "degraded"
+            errors.append(self._record_health_error("storage", exc))
         try:
             await asyncio.to_thread(self.vector_store.healthcheck)
-        except Exception:
+        except Exception as exc:
             status = "degraded"
             vector_store_status = "degraded"
+            errors.append(self._record_health_error("vector_store", exc))
         try:
+            health_embedder = self._embedder_for_timeout(self.settings.health_embed_timeout_s)
             await asyncio.wait_for(
-                asyncio.to_thread(self.embedder.embed, "healthcheck"),
+                asyncio.to_thread(health_embedder.embed, "healthcheck"),
                 timeout=self.settings.health_embed_timeout_s,
             )
-        except Exception:
+        except Exception as exc:
             status = "degraded"
             embedder_status = "degraded"
+            errors.append(self._record_health_error("embedder", exc))
+        if not errors:
+            self._health_last_success_at = checked_at
         self._health_cache = HealthResponse(
             status=status,
             storage=storage_status,
             vector_store=vector_store_status,
             embedder=embedder_status,
+            last_success_at=self._health_last_success_at,
+            last_error="; ".join(errors) if errors else None,
         )
+        self._health_cache_checked_at = checked_at
 
     async def _run_health_probe(self) -> None:
         while True:
             await asyncio.sleep(self._health_probe_interval_s)
             try:
-                await self._refresh_health_cache()
+                await self.health()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -634,6 +653,22 @@ class MemoryHallRuntime:
         if isinstance(exc, TimeoutError | httpx.TimeoutException):
             return "timeout"
         return "embedder_error"
+
+    def _health_cache_stale(self) -> bool:
+        if self._health_cache_checked_at is None:
+            return True
+        age_s = (utc_now() - self._health_cache_checked_at).total_seconds()
+        return age_s >= self._health_cache_ttl_s
+
+    def _record_health_error(self, component: str, exc: Exception) -> str:
+        message = f"{component}: {exc.__class__.__name__}: {exc}".strip()
+        logger.error(
+            "health sub-check failed component=%s error_class=%s error=%s",
+            component,
+            exc.__class__.__name__,
+            exc,
+        )
+        return message[:_MAX_EMBED_ERROR_LENGTH]
 
     def _require_queue(self) -> asyncio.Queue[WriteJob | LinkJob | ReindexJob | None]:
         if self._queue is None:
