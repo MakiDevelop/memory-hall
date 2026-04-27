@@ -170,6 +170,7 @@ class SqliteStore:
         agent_id: str | None = None,
         types: list[str] | None = None,
         tags: list[str] | None = None,
+        sync_status: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
@@ -185,6 +186,7 @@ class SqliteStore:
             agent_id=agent_id,
             types=types,
             tags=tags,
+            sync_status=sync_status,
             since=since,
             until=until,
             cursor=cursor,
@@ -198,6 +200,33 @@ class SqliteStore:
             cursor_obj = await connection.execute(sql, params)
             rows = await cursor_obj.fetchall()
         return [self._row_to_entry(row) for row in rows]
+
+    async def count_entries(
+        self,
+        tenant_id: str,
+        *,
+        sync_status: str | None = None,
+    ) -> int:
+        conditions = ["tenant_id = ?"]
+        params: list[Any] = [tenant_id]
+        self._apply_common_filters(
+            conditions=conditions,
+            params=params,
+            alias="entries",
+            namespaces=None,
+            agent_id=None,
+            types=None,
+            tags=None,
+            sync_status=sync_status,
+            since=None,
+            until=None,
+            cursor=None,
+        )
+        sql = "SELECT COUNT(*) FROM entries WHERE " + " AND ".join(conditions)
+        async with self._read_connection() as connection:
+            cursor_obj = await connection.execute(sql, params)
+            row = await cursor_obj.fetchone()
+        return int(row[0] if row else 0)
 
     async def search_lexical(
         self,
@@ -220,6 +249,7 @@ class SqliteStore:
             agent_id=agent_id,
             types=types,
             tags=tags,
+            sync_status=None,
             since=None,
             until=None,
             cursor=None,
@@ -548,6 +578,7 @@ class SqliteStore:
         agent_id: str | None,
         types: list[str] | None,
         tags: list[str] | None,
+        sync_status: str | None,
         since: datetime | None,
         until: datetime | None,
         cursor: str | None,
@@ -575,6 +606,9 @@ class SqliteStore:
                     """
                 )
                 params.append(tag)
+        if sync_status:
+            conditions.append(f"{alias}.sync_status = ?")
+            params.append(sync_status)
         if since:
             conditions.append(f"{alias}.created_at >= ?")
             params.append(since.isoformat())

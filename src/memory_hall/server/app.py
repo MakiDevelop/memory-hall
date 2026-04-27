@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import random
 import re
 from contextlib import asynccontextmanager, suppress
@@ -30,10 +31,10 @@ from memory_hall.models import (
     ListEntriesResponse,
     ReindexResponse,
     ScoreBreakdown,
-    SemanticStatus,
     SearchMemoryRequest,
     SearchMemoryResponse,
     SearchResultItem,
+    SemanticStatus,
     WriteMemoryRequest,
     WriteOutcome,
     build_content_hash,
@@ -53,6 +54,7 @@ _BACKGROUND_REINDEX_INTERVAL_S = 120.0
 _HEALTH_PROBE_INTERVAL_S = 30.0
 _HEALTH_CACHE_TTL_S = 60.0
 _REINDEX_EMBED_BATCH_SIZE = 16
+_REINDEX_SCAN_PAGE_SIZE = 200
 _EMBED_FAILURE_LIMIT = 5
 _MAX_EMBED_ERROR_LENGTH = 500
 
@@ -495,35 +497,78 @@ class MemoryHallRuntime:
         return EntryDocument.from_entry(entry)
 
     async def _handle_reindex(self, job: ReindexJob) -> ReindexResponse:
-        if job.pending_only:
-            all_entries = await self.storage.list_pending_entries(
-                job.tenant_id,
-                limit=self.settings.reindex_batch_size,
-            )
-        else:
-            all_entries = await self.storage.list_entries(job.tenant_id, limit=None)
-        scanned = len(all_entries)
-        candidates: list[Entry] = []
+        sync_status = SYNC_PENDING if job.pending_only else None
+        total_entries = await self.storage.count_entries(
+            job.tenant_id,
+            sync_status=sync_status,
+        )
+        if total_entries == 0:
+            return ReindexResponse(scanned=0, embedded=0, pending=0)
+
+        total_batches = max(1, math.ceil(total_entries / _REINDEX_SCAN_PAGE_SIZE))
+        scanned = 0
         embedded_count = 0
         pending_count = 0
-        for entry in all_entries:
-            if not job.pending_only:
-                needs_reindex = entry.sync_status != SYNC_EMBEDDED
-                if not needs_reindex:
-                    needs_reindex = not await asyncio.to_thread(
-                        self.vector_store.contains,
-                        entry.tenant_id,
-                        entry.entry_id,
+        cursor: str | None = None
+        batch_number = 0
+
+        try:
+            while scanned < total_entries:
+                entries = await self.storage.list_entries(
+                    job.tenant_id,
+                    sync_status=sync_status,
+                    limit=_REINDEX_SCAN_PAGE_SIZE,
+                    cursor=cursor,
+                )
+                if not entries:
+                    break
+
+                batch_number += 1
+                scanned += len(entries)
+                candidates: list[Entry] = []
+                for entry in entries:
+                    if not job.pending_only:
+                        needs_reindex = entry.sync_status != SYNC_EMBEDDED
+                        if not needs_reindex:
+                            needs_reindex = not await asyncio.to_thread(
+                                self.vector_store.contains,
+                                entry.tenant_id,
+                                entry.entry_id,
+                            )
+                        if not needs_reindex:
+                            continue
+                    candidates.append(entry)
+
+                for offset in range(0, len(candidates), _REINDEX_EMBED_BATCH_SIZE):
+                    embedded, pending = await self._embed_reindex_batch(
+                        candidates[offset : offset + _REINDEX_EMBED_BATCH_SIZE]
                     )
-                if not needs_reindex:
-                    continue
-            candidates.append(entry)
-        for offset in range(0, len(candidates), _REINDEX_EMBED_BATCH_SIZE):
-            embedded, pending = await self._embed_reindex_batch(
-                candidates[offset : offset + _REINDEX_EMBED_BATCH_SIZE]
+                    embedded_count += embedded
+                    pending_count += pending
+
+                logger.info(
+                    "reindex batch %s/%s, %s done tenant_id=%s pending_only=%s",
+                    batch_number,
+                    total_batches,
+                    scanned,
+                    job.tenant_id,
+                    job.pending_only,
+                )
+                if scanned >= total_entries:
+                    break
+                tail = entries[-1]
+                cursor = encode_cursor(tail.created_at, tail.entry_id)
+        except asyncio.CancelledError:
+            logger.info(
+                "reindex cancelled tenant_id=%s batches=%s scanned=%s embedded=%s pending=%s",
+                job.tenant_id,
+                batch_number,
+                scanned,
+                embedded_count,
+                pending_count,
             )
-            embedded_count += embedded
-            pending_count += pending
+            raise
+
         return ReindexResponse(scanned=scanned, embedded=embedded_count, pending=pending_count)
 
     async def _embed_reindex_batch(self, entries: list[Entry]) -> tuple[int, int]:
