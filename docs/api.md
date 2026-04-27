@@ -23,14 +23,14 @@ Authorization: Bearer <MH_API_TOKEN>
 ```
 Missing or wrong token → `401`. `/v1/health` stays public so external uptime probes and the in-image HEALTHCHECK don't need credentials. Rationale and scope limits in [ADR 0007](adr/0007-minimal-token-auth.md). This is **not** a replacement for the production HMAC mode below — it's a local-network deployment shim.
 
-### Production mode (when deployed via `memory-gateway`)
-All endpoints require:
+### Future HMAC mode (planned via `memory-gateway`, not implemented in this repo yet)
+The long-term production mode is the HMAC scheme below:
 - `Authorization: HMAC <key-id>:<signature>` header
 - `X-Nonce: <random>` header (replay protection)
 - `tenant_id` resolved from the auth principal, never accepted from the request body
 - Bind address can be `0.0.0.0`
 
-The examples below show production-mode requests. For dev mode, drop the `Authorization` and `X-Nonce` headers.
+Today, this repo only implements the two modes above: dev / standalone and minimal token mode. The examples below omit auth headers for brevity; if `MH_API_TOKEN` is set, add `Authorization: Bearer <MH_API_TOKEN>` and do not send `X-Nonce`.
 
 ## Memory
 
