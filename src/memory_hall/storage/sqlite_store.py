@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +14,15 @@ from typing import Any
 import aiosqlite
 
 from memory_hall.models import Entry, InsertOutcome, SearchCandidate, decode_cursor, dump_json
+
+_TRANSIENT_OPERATIONAL_ERROR_MARKERS = (
+    "disk i/o error",
+    "database is locked",
+    "database table is locked",
+    "database is busy",
+)
+
+logger = logging.getLogger(__name__)
 
 
 class SqliteStore:
@@ -31,66 +42,70 @@ class SqliteStore:
             self._writer_connection = None
 
     async def healthcheck(self) -> None:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> None:
             await connection.execute("SELECT 1")
 
+        await self._run_read_operation(operation)
+
     async def insert_entry(self, entry: Entry) -> InsertOutcome:
-        connection = await self._require_writer_connection()
-        await connection.execute("BEGIN IMMEDIATE")
-        try:
-            await connection.execute(
-                """
-                INSERT INTO entries (
-                    entry_id, tenant_id, agent_id, namespace, type, content, content_hash,
-                    summary, tags_json, references_json, metadata_json, sync_status,
-                    last_embedded_at, last_embed_error, last_embed_attempted_at,
-                    embed_attempt_count, created_at, created_by_principal
+        async def operation(connection: aiosqlite.Connection) -> InsertOutcome:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO entries (
+                        entry_id, tenant_id, agent_id, namespace, type, content, content_hash,
+                        summary, tags_json, references_json, metadata_json, sync_status,
+                        last_embedded_at, last_embed_error, last_embed_attempted_at,
+                        embed_attempt_count, created_at, created_by_principal
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry.entry_id,
+                        entry.tenant_id,
+                        entry.agent_id,
+                        entry.namespace,
+                        entry.type,
+                        entry.content,
+                        entry.content_hash,
+                        entry.summary,
+                        dump_json(entry.tags),
+                        dump_json(entry.references),
+                        dump_json(entry.metadata),
+                        entry.sync_status,
+                        entry.last_embedded_at.isoformat() if entry.last_embedded_at else None,
+                        entry.last_embed_error,
+                        entry.last_embed_attempted_at.isoformat()
+                        if entry.last_embed_attempted_at
+                        else None,
+                        entry.embed_attempt_count,
+                        entry.created_at.isoformat(),
+                        entry.created_by_principal,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry.entry_id,
-                    entry.tenant_id,
-                    entry.agent_id,
-                    entry.namespace,
-                    entry.type,
-                    entry.content,
-                    entry.content_hash,
-                    entry.summary,
-                    dump_json(entry.tags),
-                    dump_json(entry.references),
-                    dump_json(entry.metadata),
-                    entry.sync_status,
-                    entry.last_embedded_at.isoformat() if entry.last_embedded_at else None,
-                    entry.last_embed_error,
-                    entry.last_embed_attempted_at.isoformat()
-                    if entry.last_embed_attempted_at
-                    else None,
-                    entry.embed_attempt_count,
-                    entry.created_at.isoformat(),
-                    entry.created_by_principal,
-                ),
-            )
-            await connection.execute(
-                """
-                INSERT INTO entries_fts (entry_id, tenant_id, content, summary, tags)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (entry.entry_id, entry.tenant_id, *self._build_fts_document(entry)),
-            )
-            await connection.commit()
-            return InsertOutcome(entry=entry, created=True)
-        except sqlite3.IntegrityError as exc:
-            await connection.rollback()
-            if (
-                "entries.tenant_id, entries.content_hash" not in str(exc)
-                and "UNIQUE" not in str(exc)
-            ):
-                raise
-            existing = await self.get_entry_by_hash(entry.tenant_id, entry.content_hash)
-            if existing is None:
-                raise
-            return InsertOutcome(entry=existing, created=False)
+                await connection.execute(
+                    """
+                    INSERT INTO entries_fts (entry_id, tenant_id, content, summary, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (entry.entry_id, entry.tenant_id, *self._build_fts_document(entry)),
+                )
+                await connection.commit()
+                return InsertOutcome(entry=entry, created=True)
+            except sqlite3.IntegrityError as exc:
+                await connection.rollback()
+                if (
+                    "entries.tenant_id, entries.content_hash" not in str(exc)
+                    and "UNIQUE" not in str(exc)
+                ):
+                    raise
+                existing = await self.get_entry_by_hash(entry.tenant_id, entry.content_hash)
+                if existing is None:
+                    raise
+                return InsertOutcome(entry=existing, created=False)
+
+        return await self._run_writer_operation(operation)
 
     async def update_sync_status(
         self,
@@ -102,34 +117,42 @@ class SqliteStore:
         last_embed_attempted_at: datetime | None,
         embed_attempt_count: int,
     ) -> Entry | None:
-        connection = await self._require_writer_connection()
-        await connection.execute("BEGIN IMMEDIATE")
-        await connection.execute(
-            """
-            UPDATE entries
-            SET
-                sync_status = ?,
-                last_embedded_at = ?,
-                last_embed_error = ?,
-                last_embed_attempted_at = ?,
-                embed_attempt_count = ?
-            WHERE tenant_id = ? AND entry_id = ?
-            """,
-            (
-                sync_status,
-                last_embedded_at.isoformat() if last_embedded_at else None,
-                last_embed_error,
-                last_embed_attempted_at.isoformat() if last_embed_attempted_at else None,
-                embed_attempt_count,
-                tenant_id,
-                entry_id,
-            ),
-        )
-        await connection.commit()
+        async def operation(connection: aiosqlite.Connection) -> None:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    """
+                    UPDATE entries
+                    SET
+                        sync_status = ?,
+                        last_embedded_at = ?,
+                        last_embed_error = ?,
+                        last_embed_attempted_at = ?,
+                        embed_attempt_count = ?
+                    WHERE tenant_id = ? AND entry_id = ?
+                    """,
+                    (
+                        sync_status,
+                        last_embedded_at.isoformat() if last_embedded_at else None,
+                        last_embed_error,
+                        last_embed_attempted_at.isoformat()
+                        if last_embed_attempted_at
+                        else None,
+                        embed_attempt_count,
+                        tenant_id,
+                        entry_id,
+                    ),
+                )
+                await connection.commit()
+            except Exception:
+                await connection.rollback()
+                raise
+
+        await self._run_writer_operation(operation)
         return await self.get_entry(tenant_id, entry_id)
 
     async def get_entry(self, tenant_id: str, entry_id: str) -> Entry | None:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> Entry | None:
             cursor = await connection.execute(
                 "SELECT * FROM entries WHERE tenant_id = ? AND entry_id = ?",
                 (tenant_id, entry_id),
@@ -137,8 +160,10 @@ class SqliteStore:
             row = await cursor.fetchone()
             return self._row_to_entry(row) if row else None
 
+        return await self._run_read_operation(operation)
+
     async def get_entry_by_hash(self, tenant_id: str, content_hash: str) -> Entry | None:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> Entry | None:
             cursor = await connection.execute(
                 "SELECT * FROM entries WHERE tenant_id = ? AND content_hash = ?",
                 (tenant_id, content_hash),
@@ -146,11 +171,14 @@ class SqliteStore:
             row = await cursor.fetchone()
             return self._row_to_entry(row) if row else None
 
+        return await self._run_read_operation(operation)
+
     async def get_entries_by_ids(self, tenant_id: str, entry_ids: list[str]) -> list[Entry]:
         if not entry_ids:
             return []
         placeholders = ",".join("?" for _ in entry_ids)
-        async with self._read_connection() as connection:
+
+        async def operation(connection: aiosqlite.Connection) -> list[Entry]:
             cursor = await connection.execute(
                 f"""
                 SELECT * FROM entries
@@ -159,8 +187,10 @@ class SqliteStore:
                 (tenant_id, *entry_ids),
             )
             rows = await cursor.fetchall()
-        mapping = {row["entry_id"]: self._row_to_entry(row) for row in rows}
-        return [mapping[entry_id] for entry_id in entry_ids if entry_id in mapping]
+            mapping = {row["entry_id"]: self._row_to_entry(row) for row in rows}
+            return [mapping[entry_id] for entry_id in entry_ids if entry_id in mapping]
+
+        return await self._run_read_operation(operation)
 
     async def list_entries(
         self,
@@ -196,10 +226,12 @@ class SqliteStore:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> list[Entry]:
             cursor_obj = await connection.execute(sql, params)
             rows = await cursor_obj.fetchall()
-        return [self._row_to_entry(row) for row in rows]
+            return [self._row_to_entry(row) for row in rows]
+
+        return await self._run_read_operation(operation)
 
     async def count_entries(
         self,
@@ -223,10 +255,12 @@ class SqliteStore:
             cursor=None,
         )
         sql = "SELECT COUNT(*) FROM entries WHERE " + " AND ".join(conditions)
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> int:
             cursor_obj = await connection.execute(sql, params)
             row = await cursor_obj.fetchone()
-        return int(row[0] if row else 0)
+            return int(row[0] if row else 0)
+
+        return await self._run_read_operation(operation)
 
     async def search_lexical(
         self,
@@ -270,13 +304,18 @@ class SqliteStore:
         """
         sql += " AND ".join(conditions)
         sql += " ORDER BY bm25_score LIMIT ?"
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> list[SearchCandidate]:
             cursor_obj = await connection.execute(sql, params)
             rows = await cursor_obj.fetchall()
-        return [
-            SearchCandidate(entry_id=row["entry_id"], score=self._normalize_bm25(row["bm25_score"]))
-            for row in rows
-        ]
+            return [
+                SearchCandidate(
+                    entry_id=row["entry_id"],
+                    score=self._normalize_bm25(row["bm25_score"]),
+                )
+                for row in rows
+            ]
+
+        return await self._run_read_operation(operation)
 
     async def add_reference(
         self,
@@ -291,17 +330,24 @@ class SqliteStore:
         references = list(source.references)
         if target_entry_id not in references:
             references.append(target_entry_id)
-        connection = await self._require_writer_connection()
-        await connection.execute("BEGIN IMMEDIATE")
-        await connection.execute(
-            """
-            UPDATE entries
-            SET references_json = ?
-            WHERE tenant_id = ? AND entry_id = ?
-            """,
-            (dump_json(references), tenant_id, source_entry_id),
-        )
-        await connection.commit()
+
+        async def operation(connection: aiosqlite.Connection) -> None:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    """
+                    UPDATE entries
+                    SET references_json = ?
+                    WHERE tenant_id = ? AND entry_id = ?
+                    """,
+                    (dump_json(references), tenant_id, source_entry_id),
+                )
+                await connection.commit()
+            except Exception:
+                await connection.rollback()
+                raise
+
+        await self._run_writer_operation(operation)
         return await self.get_entry(tenant_id, source_entry_id)
 
     async def list_pending_entries(self, tenant_id: str, limit: int | None = None) -> list[Entry]:
@@ -311,13 +357,16 @@ class SqliteStore:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
-        async with self._read_connection() as connection:
+
+        async def operation(connection: aiosqlite.Connection) -> list[Entry]:
             cursor = await connection.execute(sql, params)
             rows = await cursor.fetchall()
-        return [self._row_to_entry(row) for row in rows]
+            return [self._row_to_entry(row) for row in rows]
+
+        return await self._run_read_operation(operation)
 
     async def list_tenant_ids(self) -> list[str]:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> list[str]:
             cursor = await connection.execute(
                 """
                 SELECT DISTINCT tenant_id
@@ -326,10 +375,12 @@ class SqliteStore:
                 """
             )
             rows = await cursor.fetchall()
-        return [row["tenant_id"] for row in rows]
+            return [row["tenant_id"] for row in rows]
+
+        return await self._run_read_operation(operation)
 
     async def get_references_out(self, tenant_id: str, entry_id: str) -> list[Entry]:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> list[Entry]:
             cursor = await connection.execute(
                 """
                 SELECT e.*
@@ -351,10 +402,12 @@ class SqliteStore:
                 (tenant_id, entry_id, tenant_id),
             )
             rows = await cursor.fetchall()
-        return [self._row_to_entry(row) for row in rows]
+            return [self._row_to_entry(row) for row in rows]
+
+        return await self._run_read_operation(operation)
 
     async def get_references_in(self, tenant_id: str, entry_id: str) -> list[Entry]:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> list[Entry]:
             cursor = await connection.execute(
                 """
                 SELECT DISTINCT e.*
@@ -367,10 +420,12 @@ class SqliteStore:
                 (entry_id, tenant_id),
             )
             rows = await cursor.fetchall()
-        return [self._row_to_entry(row) for row in rows]
+            return [self._row_to_entry(row) for row in rows]
+
+        return await self._run_read_operation(operation)
 
     async def audit(self) -> dict[str, object]:
-        async with self._read_connection() as connection:
+        async def operation(connection: aiosqlite.Connection) -> dict[str, object]:
             total_entries = await self._fetch_count(connection, "SELECT COUNT(*) FROM entries")
             tenant_counts = await self._fetch_key_count(
                 connection,
@@ -410,33 +465,35 @@ class SqliteStore:
                 )
                 """,
             )
-        return {
-            "total_entries": total_entries,
-            "tenant_counts": tenant_counts,
-            "namespace_counts": namespace_counts,
-            "sync_status_counts": sync_status_counts,
-            "content_hash_collisions": collisions,
-        }
+            return {
+                "total_entries": total_entries,
+                "tenant_counts": tenant_counts,
+                "namespace_counts": namespace_counts,
+                "sync_status_counts": sync_status_counts,
+                "content_hash_collisions": collisions,
+            }
+
+        return await self._run_read_operation(operation)
 
     async def reindex_fts_entries(self, entries: list[Entry]) -> int:
         if not entries:
             return 0
-        connection = await self._require_writer_connection()
-        await connection.execute("BEGIN IMMEDIATE")
-        try:
-            reindexed = 0
-            for entry in entries:
-                reindexed += await self._refresh_fts_row(connection, entry)
-            await connection.commit()
-            return reindexed
-        except Exception:
-            await connection.rollback()
-            raise
+        async def operation(connection: aiosqlite.Connection) -> int:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                reindexed = 0
+                for entry in entries:
+                    reindexed += await self._refresh_fts_row(connection, entry)
+                await connection.commit()
+                return reindexed
+            except Exception:
+                await connection.rollback()
+                raise
+
+        return await self._run_writer_operation(operation)
 
     async def _open_writer_connection(self) -> None:
-        self._writer_connection = await aiosqlite.connect(self.database_path)
-        self._writer_connection.row_factory = aiosqlite.Row
-        await self._apply_pragmas(self._writer_connection)
+        self._writer_connection = await self._open_connection()
         await self._create_schema(self._writer_connection)
 
     async def _create_schema(self, connection: aiosqlite.Connection) -> None:
@@ -526,12 +583,92 @@ class SqliteStore:
 
     @asynccontextmanager
     async def _read_connection(self):
-        connection = await aiosqlite.connect(self.database_path)
+        connection = await self._open_connection()
         try:
-            await self._apply_pragmas(connection)
             yield connection
         finally:
             await connection.close()
+
+    async def _open_connection(self) -> aiosqlite.Connection:
+        connection = await aiosqlite.connect(self.database_path)
+        connection.row_factory = aiosqlite.Row
+        await self._apply_pragmas(connection)
+        return connection
+
+    async def _run_read_operation(
+        self,
+        operation: Callable[[aiosqlite.Connection], Awaitable[Any]],
+    ) -> Any:
+        attempts = 0
+        while True:
+            connection: aiosqlite.Connection | None = None
+            try:
+                connection = await self._open_connection()
+                return await operation(connection)
+            except sqlite3.OperationalError as exc:
+                if not self._should_retry_operational_error(exc, attempts):
+                    raise
+                attempts += 1
+                await self._recycle_broken_connection(connection, exc)
+                connection = None
+            finally:
+                if connection is not None:
+                    await connection.close()
+
+    async def _run_writer_operation(
+        self,
+        operation: Callable[[aiosqlite.Connection], Awaitable[Any]],
+    ) -> Any:
+        attempts = 0
+        while True:
+            connection = await self._require_writer_connection()
+            try:
+                return await operation(connection)
+            except sqlite3.OperationalError as exc:
+                if not self._should_retry_operational_error(exc, attempts):
+                    raise
+                attempts += 1
+                await self._recycle_writer_connection(connection, exc)
+
+    async def _recycle_writer_connection(
+        self,
+        connection: aiosqlite.Connection,
+        exc: sqlite3.OperationalError,
+    ) -> None:
+        await self._recycle_broken_connection(connection, exc)
+        self._writer_connection = None
+        await self._open_writer_connection()
+
+    async def _recycle_broken_connection(
+        self,
+        connection: aiosqlite.Connection | None,
+        exc: sqlite3.OperationalError,
+    ) -> None:
+        if connection is None:
+            return
+        logger.warning(
+            "aiosqlite connection recycled after disk I/O error connection_id=%s error=%s",
+            hex(id(connection)),
+            exc,
+        )
+        try:
+            await connection.close()
+        except Exception as close_exc:  # pragma: no cover - best-effort cleanup only
+            logger.warning(
+                "aiosqlite connection close failed during recycle connection_id=%s error=%s",
+                hex(id(connection)),
+                close_exc,
+            )
+
+    @staticmethod
+    def _should_retry_operational_error(
+        exc: sqlite3.OperationalError,
+        attempts: int,
+    ) -> bool:
+        if attempts >= 1:
+            return False
+        message = str(exc).lower()
+        return any(marker in message for marker in _TRANSIENT_OPERATIONAL_ERROR_MARKERS)
 
     @staticmethod
     async def _apply_pragmas(connection: aiosqlite.Connection) -> None:
