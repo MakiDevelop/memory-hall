@@ -37,7 +37,9 @@ async def test_write_search_get_and_list_filters(app_factory) -> None:
         )
         assert search_response.status_code == 200
         search_payload = search_response.json()
+        assert search_payload["degraded"] is False
         assert search_payload["results"][0]["entry"]["entry_id"] == entry_id
+        assert search_payload["results"][0]["score_breakdown"]["semantic_status"] == "ok"
 
         get_response = await client.get(f"/v1/memory/{entry_id}")
         assert get_response.status_code == 200

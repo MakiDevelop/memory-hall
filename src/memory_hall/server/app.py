@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -29,6 +30,7 @@ from memory_hall.models import (
     ListEntriesResponse,
     ReindexResponse,
     ScoreBreakdown,
+    SemanticStatus,
     SearchMemoryRequest,
     SearchMemoryResponse,
     SearchResultItem,
@@ -197,6 +199,8 @@ class MemoryHallRuntime:
         candidate_limit = max(limit, limit * self.settings.search_candidate_multiplier)
         lexical_hits: list[tuple[str, float]] = []
         semantic_hits: list[tuple[str, float]] = []
+        semantic_status: SemanticStatus = "not_attempted"
+        degraded = False
 
         if payload.mode in {"lexical", "hybrid"}:
             lexical_candidates = await self.storage.search_lexical(
@@ -213,9 +217,10 @@ class MemoryHallRuntime:
             ]
 
         if payload.mode in {"semantic", "hybrid"}:
+            search_embedder = self._embedder_for_timeout(self.settings.search_embed_timeout_s)
             try:
                 query_vector = await asyncio.wait_for(
-                    asyncio.to_thread(self.embedder.embed, payload.query),
+                    asyncio.to_thread(search_embedder.embed, payload.query),
                     timeout=self.settings.search_embed_timeout_s,
                 )
                 semantic_candidates = await asyncio.to_thread(
@@ -227,9 +232,17 @@ class MemoryHallRuntime:
                 semantic_hits = [
                     (candidate.entry_id, candidate.score) for candidate in semantic_candidates
                 ]
-            except Exception:
-                if payload.mode == "semantic":
-                    semantic_hits = []
+                semantic_status = "ok"
+            except Exception as exc:
+                semantic_status = self._semantic_status_from_exception(exc)
+                degraded = True
+                logger.warning(
+                    "semantic search degraded tenant_id=%s status=%s error_class=%s error=%s",
+                    tenant_id,
+                    semantic_status,
+                    exc.__class__.__name__,
+                    exc,
+                )
 
         combined = self._combine_hits(payload.query, lexical_hits, semantic_hits, limit)
         entry_ids = [item["entry_id"] for item in combined]
@@ -248,11 +261,12 @@ class MemoryHallRuntime:
                         bm25=item["bm25"],
                         semantic=item["semantic"],
                         rrf=item["rrf"],
+                        semantic_status=semantic_status,
                     ),
                     entry=EntryDocument.from_entry(entry),
                 )
             )
-        return SearchMemoryResponse(results=results, total=len(results))
+        return SearchMemoryResponse(results=results, total=len(results), degraded=degraded)
 
     async def get_entry(self, *, tenant_id: str, entry_id: str) -> GetEntryResponse | None:
         entry = await self.storage.get_entry(tenant_id, entry_id)
@@ -609,6 +623,17 @@ class MemoryHallRuntime:
         if isinstance(self.embedder, HttpEmbedder):
             return self.embedder.timeout_s
         return self.settings.embed_timeout_s
+
+    def _embedder_for_timeout(self, timeout_s: float) -> Embedder:
+        if isinstance(self.embedder, HttpEmbedder):
+            return self.embedder.clone_with_timeout(timeout_s)
+        return self.embedder
+
+    @staticmethod
+    def _semantic_status_from_exception(exc: Exception) -> SemanticStatus:
+        if isinstance(exc, TimeoutError | httpx.TimeoutException):
+            return "timeout"
+        return "embedder_error"
 
     def _require_queue(self) -> asyncio.Queue[WriteJob | LinkJob | ReindexJob | None]:
         if self._queue is None:

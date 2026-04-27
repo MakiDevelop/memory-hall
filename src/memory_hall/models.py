@@ -15,6 +15,7 @@ SYNC_PENDING = "pending"
 SYNC_EMBEDDED = "embedded"
 SYNC_FAILED = "failed"
 SyncStatus = Literal["pending", "embedded", "failed"]
+SemanticStatus = Literal["ok", "timeout", "embedder_error", "not_attempted"]
 
 _ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -181,6 +182,7 @@ class ScoreBreakdown(BaseModel):
     bm25: float
     semantic: float
     rrf: float
+    semantic_status: SemanticStatus = "not_attempted"
 
 
 class SearchResultItem(BaseModel):
@@ -193,6 +195,7 @@ class SearchResultItem(BaseModel):
 class SearchMemoryResponse(BaseModel):
     results: list[SearchResultItem]
     total: int
+    degraded: bool = False
 
 
 class GetEntryResponse(BaseModel):
