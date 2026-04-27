@@ -10,7 +10,7 @@ class HttpEmbedder:
         self,
         *,
         base_url: str,
-        timeout_s: float = 10.0,
+        timeout_s: float = 8.0,
         dim: int = 1024,
         embed_path: str = "/embed",
     ) -> None:
@@ -20,6 +20,14 @@ class HttpEmbedder:
         self.timeout_s = timeout_s
         self.dim = dim
         self.embed_path = f"/{embed_path.lstrip('/')}"
+
+    def clone_with_timeout(self, timeout_s: float) -> HttpEmbedder:
+        return HttpEmbedder(
+            base_url=self.base_url,
+            timeout_s=timeout_s,
+            dim=self.dim,
+            embed_path=self.embed_path,
+        )
 
     def embed(self, text: str) -> list[float]:
         embeddings = self.embed_batch([text])

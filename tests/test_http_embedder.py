@@ -108,5 +108,5 @@ def test_build_runtime_uses_http_embedder(tmp_path: Path) -> None:
 
     assert isinstance(runtime.embedder, HttpEmbedder)
     assert runtime.embedder.base_url == "http://embedder.test:8790"
-    assert runtime.embedder.timeout_s == 10.0
+    assert runtime.embedder.timeout_s == 8.0
     assert runtime.embedder.dim == 8

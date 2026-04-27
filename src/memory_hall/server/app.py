@@ -7,7 +7,7 @@ import logging
 import random
 import re
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -19,6 +19,7 @@ from memory_hall.embedder.interface import Embedder
 from memory_hall.embedder.ollama_embedder import OllamaEmbedder
 from memory_hall.models import (
     SYNC_EMBEDDED,
+    SYNC_FAILED,
     SYNC_PENDING,
     AuditResponse,
     Entry,
@@ -49,6 +50,8 @@ _RRF_K = 60
 _BACKGROUND_REINDEX_INTERVAL_S = 120.0
 _HEALTH_PROBE_INTERVAL_S = 30.0
 _REINDEX_EMBED_BATCH_SIZE = 16
+_EMBED_FAILURE_LIMIT = 5
+_MAX_EMBED_ERROR_LENGTH = 500
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +216,7 @@ class MemoryHallRuntime:
             try:
                 query_vector = await asyncio.wait_for(
                     asyncio.to_thread(self.embedder.embed, payload.query),
-                    timeout=self.settings.embed_timeout_s,
+                    timeout=self.settings.search_embed_timeout_s,
                 )
                 semantic_candidates = await asyncio.to_thread(
                     self.vector_store.search,
@@ -364,14 +367,24 @@ class MemoryHallRuntime:
                 queue.task_done()
 
     async def _run_background_reindex(self) -> None:
-        tenant_id = self.settings.default_tenant_id
         while True:
             await asyncio.sleep(
                 self._background_reindex_interval_s
                 + random.uniform(0.0, self._background_reindex_jitter_s)  # noqa: S311
             )
             try:
-                await self._queue_reindex(tenant_id=tenant_id, pending_only=True)
+                tenant_ids = await self.storage.list_tenant_ids()
+                for tenant_id in tenant_ids:
+                    try:
+                        await self._queue_reindex(tenant_id=tenant_id, pending_only=True)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "background reindex failed tenant_id=%s: %s",
+                            tenant_id,
+                            exc,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -393,6 +406,9 @@ class MemoryHallRuntime:
             metadata=job.payload.metadata,
             sync_status=SYNC_PENDING,
             last_embedded_at=None,
+            last_embed_error=None,
+            last_embed_attempted_at=None,
+            embed_attempt_count=0,
             created_at=created_at,
             created_by_principal=job.principal_id,
         )
@@ -407,7 +423,7 @@ class MemoryHallRuntime:
         try:
             vector = await asyncio.wait_for(
                 asyncio.to_thread(self.embedder.embed, outcome.entry.content),
-                timeout=self.settings.embed_timeout_s,
+                timeout=self._embed_timeout_s(),
             )
             await asyncio.to_thread(
                 self.vector_store.upsert,
@@ -415,30 +431,23 @@ class MemoryHallRuntime:
                 outcome.entry.entry_id,
                 vector,
             )
-            embedded_at = utc_now()
-            embedded_entry = await self.storage.update_sync_status(
-                outcome.entry.tenant_id,
-                outcome.entry.entry_id,
-                SYNC_EMBEDDED,
-                embedded_at,
-            )
-            if embedded_entry is None:
-                embedded_entry = outcome.entry
+            embedded_entry = await self._mark_embed_success(outcome.entry)
             return WriteOutcome(
                 entry=embedded_entry,
                 created=True,
                 embedded=True,
                 status_code=201,
             )
-        except Exception:
-            pending_entry = await self.storage.get_entry(
-                outcome.entry.tenant_id,
-                outcome.entry.entry_id,
+        except Exception as exc:
+            pending_entry = await self._mark_embed_failure(
+                outcome.entry,
+                exc,
+                operation="write",
             )
             return WriteOutcome(
-                entry=pending_entry or outcome.entry,
+                entry=pending_entry,
                 created=True,
-                embedded=False,
+                embedded=pending_entry.sync_status == SYNC_EMBEDDED,
                 status_code=202,
             )
 
@@ -490,18 +499,25 @@ class MemoryHallRuntime:
         try:
             vectors = await asyncio.wait_for(
                 asyncio.to_thread(self.embedder.embed_batch, [entry.content for entry in entries]),
-                timeout=self.settings.embed_timeout_s * len(entries),
+                timeout=self._embed_timeout_s(),
             )
             if len(vectors) != len(entries):
                 raise ValueError("embed_batch returned mismatched vector count")
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "reindex batch embed failed for %s entries: %s: %s",
+                len(entries),
+                exc.__class__.__name__,
+                exc,
+            )
             embedded_count = 0
             pending_count = 0
             for entry in entries:
                 try:
                     embedded = await self._embed_reindex_entry(entry)
                     embedded_count += int(embedded)
-                except Exception:
+                except Exception as entry_exc:
+                    await self._mark_embed_failure(entry, entry_exc, operation="reindex")
                     pending_count += 1
             return (embedded_count, pending_count)
         embedded_count = 0
@@ -514,21 +530,17 @@ class MemoryHallRuntime:
                     entry.entry_id,
                     vector,
                 )
-                await self.storage.update_sync_status(
-                    entry.tenant_id,
-                    entry.entry_id,
-                    SYNC_EMBEDDED,
-                    utc_now(),
-                )
+                await self._mark_embed_success(entry)
                 embedded_count += 1
-            except Exception:
+            except Exception as exc:
+                await self._mark_embed_failure(entry, exc, operation="reindex")
                 pending_count += 1
         return (embedded_count, pending_count)
 
     async def _embed_reindex_entry(self, entry: Entry) -> bool:
         vector = await asyncio.wait_for(
             asyncio.to_thread(self.embedder.embed, entry.content),
-            timeout=self.settings.embed_timeout_s,
+            timeout=self._embed_timeout_s(),
         )
         await asyncio.to_thread(
             self.vector_store.upsert,
@@ -536,13 +548,67 @@ class MemoryHallRuntime:
             entry.entry_id,
             vector,
         )
-        await self.storage.update_sync_status(
+        await self._mark_embed_success(entry)
+        return True
+
+    async def _mark_embed_success(self, entry: Entry) -> Entry:
+        embedded_at = utc_now()
+        updated_entry = await self.storage.update_sync_status(
             entry.tenant_id,
             entry.entry_id,
             SYNC_EMBEDDED,
-            utc_now(),
+            embedded_at,
+            None,
+            embedded_at,
+            0,
         )
-        return True
+        return updated_entry or replace(
+            entry,
+            sync_status=SYNC_EMBEDDED,
+            last_embedded_at=embedded_at,
+            last_embed_error=None,
+            last_embed_attempted_at=embedded_at,
+            embed_attempt_count=0,
+        )
+
+    async def _mark_embed_failure(self, entry: Entry, exc: Exception, *, operation: str) -> Entry:
+        attempted_at = utc_now()
+        next_attempt_count = entry.embed_attempt_count + 1
+        next_status = SYNC_FAILED if next_attempt_count >= _EMBED_FAILURE_LIMIT else SYNC_PENDING
+        error_message = self._format_embed_error(exc)
+        logger.error(
+            "%s embed failed entry_id=%s error_class=%s error=%s",
+            operation,
+            entry.entry_id,
+            exc.__class__.__name__,
+            exc,
+        )
+        updated_entry = await self.storage.update_sync_status(
+            entry.tenant_id,
+            entry.entry_id,
+            next_status,
+            entry.last_embedded_at,
+            error_message,
+            attempted_at,
+            next_attempt_count,
+        )
+        return updated_entry or replace(
+            entry,
+            sync_status=next_status,
+            last_embed_error=error_message,
+            last_embed_attempted_at=attempted_at,
+            embed_attempt_count=next_attempt_count,
+        )
+
+    @staticmethod
+    def _format_embed_error(exc: Exception) -> str:
+        message = f"{exc.__class__.__name__}: {exc}".strip()
+        return message[:_MAX_EMBED_ERROR_LENGTH]
+
+    def _embed_timeout_s(self) -> float:
+        if isinstance(self.embedder, HttpEmbedder):
+            return self.embedder.timeout_s
+        return self.settings.embed_timeout_s
 
     def _require_queue(self) -> asyncio.Queue[WriteJob | LinkJob | ReindexJob | None]:
         if self._queue is None:
@@ -602,7 +668,7 @@ def build_runtime(
                 raise ValueError("embed_base_url is required when embedder_kind='http'")
             active_embedder = HttpEmbedder(
                 base_url=active_settings.embed_base_url,
-                timeout_s=max(active_settings.embed_timeout_s, 10.0),
+                timeout_s=max(active_settings.embed_timeout_s, 8.0),
                 dim=embed_dim,
             )
         else:

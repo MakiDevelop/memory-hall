@@ -21,6 +21,9 @@ class Storage(Protocol):
         entry_id: str,
         sync_status: str,
         last_embedded_at: datetime | None,
+        last_embed_error: str | None,
+        last_embed_attempted_at: datetime | None,
+        embed_attempt_count: int,
     ) -> Entry | None: ...
 
     async def get_entry(self, tenant_id: str, entry_id: str) -> Entry | None: ...
@@ -65,6 +68,8 @@ class Storage(Protocol):
     async def list_pending_entries(
         self, tenant_id: str, limit: int | None = None
     ) -> list[Entry]: ...
+
+    async def list_tenant_ids(self) -> list[str]: ...
 
     async def get_references_out(self, tenant_id: str, entry_id: str) -> list[Entry]: ...
 

@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     vector_database_path: Path = Field(default=Path(".data/memory-hall-vectors.sqlite3"))
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "bge-m3"
-    embed_timeout_s: float = 2.0
+    embed_timeout_s: float = 8.0
     health_embed_timeout_s: float = 3.0
+    search_embed_timeout_s: float = 2.0
     embedder_kind: Literal["ollama", "http"] = "ollama"
     embed_base_url: str | None = None
     embed_dim: int | None = None

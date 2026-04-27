@@ -44,9 +44,13 @@ class DeterministicEmbedder:
 
 
 class TimeoutEmbedder(DeterministicEmbedder):
+    def __init__(self, *, sleep_s: float = 10.0, dim: int = 8) -> None:
+        super().__init__(dim=dim)
+        self.sleep_s = sleep_s
+
     def embed(self, text: str) -> list[float]:
         del text
-        time.sleep(3)
+        time.sleep(self.sleep_s)
         return super().embed("")
 
 
@@ -72,6 +76,11 @@ async def client_for_app(app) -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture()
 def deterministic_embedder() -> DeterministicEmbedder:
     return DeterministicEmbedder()
+
+
+@pytest.fixture(autouse=True)
+def isolate_api_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MH_API_TOKEN", raising=False)
 
 
 @pytest.fixture()

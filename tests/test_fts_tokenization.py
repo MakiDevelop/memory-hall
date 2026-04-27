@@ -118,6 +118,9 @@ async def test_reindex_fts_rewrites_legacy_rows(tmp_path) -> None:
             metadata={},
             sync_status="pending",
             last_embedded_at=None,
+            last_embed_error=None,
+            last_embed_attempted_at=None,
+            embed_attempt_count=0,
             created_at=created_at,
             created_by_principal="pytest",
         )

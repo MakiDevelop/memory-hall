@@ -43,9 +43,10 @@ class SqliteStore:
                 INSERT INTO entries (
                     entry_id, tenant_id, agent_id, namespace, type, content, content_hash,
                     summary, tags_json, references_json, metadata_json, sync_status,
-                    last_embedded_at, created_at, created_by_principal
+                    last_embedded_at, last_embed_error, last_embed_attempted_at,
+                    embed_attempt_count, created_at, created_by_principal
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.entry_id,
@@ -61,6 +62,11 @@ class SqliteStore:
                     dump_json(entry.metadata),
                     entry.sync_status,
                     entry.last_embedded_at.isoformat() if entry.last_embedded_at else None,
+                    entry.last_embed_error,
+                    entry.last_embed_attempted_at.isoformat()
+                    if entry.last_embed_attempted_at
+                    else None,
+                    entry.embed_attempt_count,
                     entry.created_at.isoformat(),
                     entry.created_by_principal,
                 ),
@@ -92,18 +98,29 @@ class SqliteStore:
         entry_id: str,
         sync_status: str,
         last_embedded_at: datetime | None,
+        last_embed_error: str | None,
+        last_embed_attempted_at: datetime | None,
+        embed_attempt_count: int,
     ) -> Entry | None:
         connection = await self._require_writer_connection()
         await connection.execute("BEGIN IMMEDIATE")
         await connection.execute(
             """
             UPDATE entries
-            SET sync_status = ?, last_embedded_at = ?
+            SET
+                sync_status = ?,
+                last_embedded_at = ?,
+                last_embed_error = ?,
+                last_embed_attempted_at = ?,
+                embed_attempt_count = ?
             WHERE tenant_id = ? AND entry_id = ?
             """,
             (
                 sync_status,
                 last_embedded_at.isoformat() if last_embedded_at else None,
+                last_embed_error,
+                last_embed_attempted_at.isoformat() if last_embed_attempted_at else None,
+                embed_attempt_count,
                 tenant_id,
                 entry_id,
             ),
@@ -258,7 +275,7 @@ class SqliteStore:
         return await self.get_entry(tenant_id, source_entry_id)
 
     async def list_pending_entries(self, tenant_id: str, limit: int | None = None) -> list[Entry]:
-        sql = "SELECT * FROM entries WHERE tenant_id = ? AND sync_status != 'embedded'"
+        sql = "SELECT * FROM entries WHERE tenant_id = ? AND sync_status = 'pending'"
         params: list[Any] = [tenant_id]
         sql += " ORDER BY created_at ASC, entry_id ASC"
         if limit is not None:
@@ -268,6 +285,18 @@ class SqliteStore:
             cursor = await connection.execute(sql, params)
             rows = await cursor.fetchall()
         return [self._row_to_entry(row) for row in rows]
+
+    async def list_tenant_ids(self) -> list[str]:
+        async with self._read_connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT DISTINCT tenant_id
+                FROM entries
+                ORDER BY tenant_id
+                """
+            )
+            rows = await cursor.fetchall()
+        return [row["tenant_id"] for row in rows]
 
     async def get_references_out(self, tenant_id: str, entry_id: str) -> list[Entry]:
         async with self._read_connection() as connection:
@@ -397,6 +426,9 @@ class SqliteStore:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 sync_status TEXT NOT NULL DEFAULT 'pending',
                 last_embedded_at TEXT,
+                last_embed_error TEXT,
+                last_embed_attempted_at TEXT,
+                embed_attempt_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 created_by_principal TEXT NOT NULL,
                 UNIQUE (tenant_id, content_hash)
@@ -428,7 +460,34 @@ class SqliteStore:
             );
             """
         )
+        await self._apply_schema_migrations(connection)
         await connection.commit()
+
+    async def _apply_schema_migrations(self, connection: aiosqlite.Connection) -> None:
+        cursor = await connection.execute("PRAGMA table_info(entries)")
+        rows = await cursor.fetchall()
+        existing_columns = {row["name"] for row in rows}
+        migrations = [
+            ("last_embed_error", "ALTER TABLE entries ADD COLUMN last_embed_error TEXT"),
+            (
+                "last_embed_attempted_at",
+                "ALTER TABLE entries ADD COLUMN last_embed_attempted_at TEXT",
+            ),
+            (
+                "embed_attempt_count",
+                "ALTER TABLE entries ADD COLUMN embed_attempt_count INTEGER NOT NULL DEFAULT 0",
+            ),
+        ]
+        for column_name, sql in migrations:
+            if column_name in existing_columns:
+                continue
+            await connection.execute(sql)
+        await connection.execute(
+            """
+            UPDATE entries
+            SET embed_attempt_count = COALESCE(embed_attempt_count, 0)
+            """
+        )
 
     async def _require_writer_connection(self) -> aiosqlite.Connection:
         if self._writer_connection is None:
@@ -469,6 +528,11 @@ class SqliteStore:
             last_embedded_at=datetime.fromisoformat(row["last_embedded_at"])
             if row["last_embedded_at"]
             else None,
+            last_embed_error=row["last_embed_error"],
+            last_embed_attempted_at=datetime.fromisoformat(row["last_embed_attempted_at"])
+            if row["last_embed_attempted_at"]
+            else None,
+            embed_attempt_count=int(row["embed_attempt_count"] or 0),
             created_at=datetime.fromisoformat(row["created_at"]),
             created_by_principal=row["created_by_principal"],
         )

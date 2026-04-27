@@ -67,6 +67,9 @@ class Entry:
     metadata: dict[str, Any]
     sync_status: SyncStatus
     last_embedded_at: datetime | None
+    last_embed_error: str | None
+    last_embed_attempted_at: datetime | None
+    embed_attempt_count: int
     created_at: datetime
     created_by_principal: str
 
@@ -107,6 +110,9 @@ class EntryDocument(BaseModel):
     metadata: dict[str, Any]
     sync_status: SyncStatus
     last_embedded_at: datetime | None
+    last_embed_error: str | None
+    last_embed_attempted_at: datetime | None
+    embed_attempt_count: int
     created_at: datetime
     created_by_principal: str
 

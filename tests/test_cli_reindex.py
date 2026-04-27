@@ -25,6 +25,9 @@ def _entry(index: int) -> Entry:
         metadata={},
         sync_status="pending",
         last_embedded_at=None,
+        last_embed_error=None,
+        last_embed_attempted_at=None,
+        embed_attempt_count=0,
         created_at=utc_now() - timedelta(seconds=index),
         created_by_principal="pytest",
     )
