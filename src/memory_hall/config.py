@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     search_candidate_multiplier: int = 5
     request_timeout_s: float = 5.0
     reindex_batch_size: int = 500
+    wal_checkpoint_interval_s: float = 300.0
     max_content_bytes: int = 64 * 1024
 
     @model_validator(mode="before")

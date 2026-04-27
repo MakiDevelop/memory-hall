@@ -29,8 +29,23 @@ class SqliteStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self._writer_connection: aiosqlite.Connection | None = None
+        self._writer_lock = None
+        self._reader_state = None
+        self._active_readers = 0
+        self._checkpoint_requested = False
+
+    def _ensure_runtime_primitives(self) -> None:
+        if self._writer_lock is None:
+            import asyncio
+
+            self._writer_lock = asyncio.Lock()
+        if self._reader_state is None:
+            import asyncio
+
+            self._reader_state = asyncio.Condition()
 
     async def open(self) -> None:
+        self._ensure_runtime_primitives()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         await self._open_writer_connection()
         async with self._read_connection() as connection:
@@ -475,6 +490,19 @@ class SqliteStore:
 
         return await self._run_read_operation(operation)
 
+    async def checkpoint_wal(self, *, mode: str = "TRUNCATE") -> tuple[int, int, int]:
+        self._ensure_runtime_primitives()
+        async with self._writer_lock:
+            async with self._pause_readers():
+                connection = await self._open_connection()
+                try:
+                    busy, log_frames, checkpointed = await self._checkpoint(connection, "PASSIVE")
+                    if busy > 0:
+                        await self._checkpoint(connection, "RESTART")
+                    return await self._checkpoint(connection, mode)
+                finally:
+                    await connection.close()
+
     async def reindex_fts_entries(self, entries: list[Entry]) -> int:
         if not entries:
             return 0
@@ -599,36 +627,40 @@ class SqliteStore:
         self,
         operation: Callable[[aiosqlite.Connection], Awaitable[Any]],
     ) -> Any:
+        self._ensure_runtime_primitives()
         attempts = 0
         while True:
             connection: aiosqlite.Connection | None = None
-            try:
-                connection = await self._open_connection()
-                return await operation(connection)
-            except sqlite3.OperationalError as exc:
-                if not self._should_retry_operational_error(exc, attempts):
-                    raise
-                attempts += 1
-                await self._recycle_broken_connection(connection, exc)
-                connection = None
-            finally:
-                if connection is not None:
-                    await connection.close()
+            async with self._acquire_reader_slot():
+                try:
+                    connection = await self._open_connection()
+                    return await operation(connection)
+                except sqlite3.OperationalError as exc:
+                    if not self._should_retry_operational_error(exc, attempts):
+                        raise
+                    attempts += 1
+                    await self._recycle_broken_connection(connection, exc)
+                    connection = None
+                finally:
+                    if connection is not None:
+                        await connection.close()
 
     async def _run_writer_operation(
         self,
         operation: Callable[[aiosqlite.Connection], Awaitable[Any]],
     ) -> Any:
+        self._ensure_runtime_primitives()
         attempts = 0
         while True:
-            connection = await self._require_writer_connection()
-            try:
-                return await operation(connection)
-            except sqlite3.OperationalError as exc:
-                if not self._should_retry_operational_error(exc, attempts):
-                    raise
-                attempts += 1
-                await self._recycle_writer_connection(connection, exc)
+            async with self._writer_lock:
+                connection = await self._require_writer_connection()
+                try:
+                    return await operation(connection)
+                except sqlite3.OperationalError as exc:
+                    if not self._should_retry_operational_error(exc, attempts):
+                        raise
+                    attempts += 1
+                    await self._recycle_writer_connection(connection, exc)
 
     async def _recycle_writer_connection(
         self,
@@ -669,6 +701,45 @@ class SqliteStore:
             return False
         message = str(exc).lower()
         return any(marker in message for marker in _TRANSIENT_OPERATIONAL_ERROR_MARKERS)
+
+    @asynccontextmanager
+    async def _acquire_reader_slot(self):
+        self._ensure_runtime_primitives()
+        async with self._reader_state:
+            while self._checkpoint_requested:
+                await self._reader_state.wait()
+            self._active_readers += 1
+        try:
+            yield
+        finally:
+            async with self._reader_state:
+                self._active_readers -= 1
+                self._reader_state.notify_all()
+
+    @asynccontextmanager
+    async def _pause_readers(self):
+        self._ensure_runtime_primitives()
+        async with self._reader_state:
+            self._checkpoint_requested = True
+            while self._active_readers > 0:
+                await self._reader_state.wait()
+        try:
+            yield
+        finally:
+            async with self._reader_state:
+                self._checkpoint_requested = False
+                self._reader_state.notify_all()
+
+    @staticmethod
+    async def _checkpoint(
+        connection: aiosqlite.Connection,
+        mode: str,
+    ) -> tuple[int, int, int]:
+        cursor = await connection.execute(f"PRAGMA wal_checkpoint({mode});")
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError(f"wal_checkpoint({mode}) returned no result")
+        return (int(row[0]), int(row[1]), int(row[2]))
 
     @staticmethod
     async def _apply_pragmas(connection: aiosqlite.Connection) -> None:

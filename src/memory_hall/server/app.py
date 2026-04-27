@@ -55,6 +55,7 @@ _HEALTH_PROBE_INTERVAL_S = 30.0
 _HEALTH_CACHE_TTL_S = 60.0
 _REINDEX_EMBED_BATCH_SIZE = 16
 _REINDEX_SCAN_PAGE_SIZE = 200
+_WAL_CHECKPOINT_MODE = "TRUNCATE"
 _EMBED_FAILURE_LIMIT = 5
 _MAX_EMBED_ERROR_LENGTH = 500
 
@@ -101,10 +102,12 @@ class MemoryHallRuntime:
         self._worker: asyncio.Task[None] | None = None
         self._reindex_worker: asyncio.Task[None] | None = None
         self._health_probe_worker: asyncio.Task[None] | None = None
+        self._wal_checkpoint_worker: asyncio.Task[None] | None = None
         self._background_reindex_interval_s = _BACKGROUND_REINDEX_INTERVAL_S
         self._background_reindex_jitter_s = min(15.0, _BACKGROUND_REINDEX_INTERVAL_S * 0.1)
         self._health_probe_interval_s = _HEALTH_PROBE_INTERVAL_S
         self._health_cache_ttl_s = _HEALTH_CACHE_TTL_S
+        self._wal_checkpoint_interval_s = self.settings.wal_checkpoint_interval_s
         self._health_cache_checked_at = None
         self._health_last_success_at = None
         self._health_cache = HealthResponse(
@@ -125,8 +128,13 @@ class MemoryHallRuntime:
         self._worker = asyncio.create_task(self._consume_writes())
         self._reindex_worker = asyncio.create_task(self._run_background_reindex())
         self._health_probe_worker = asyncio.create_task(self._run_health_probe())
+        self._wal_checkpoint_worker = asyncio.create_task(self._run_wal_checkpoint())
 
     async def stop(self) -> None:
+        if self._wal_checkpoint_worker is not None:
+            self._wal_checkpoint_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._wal_checkpoint_worker
         if self._health_probe_worker is not None:
             self._health_probe_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -376,6 +384,16 @@ class MemoryHallRuntime:
                 raise
             except Exception as exc:
                 logger.warning("health probe failed: %s", exc)
+
+    async def _run_wal_checkpoint(self) -> None:
+        while True:
+            await asyncio.sleep(self._wal_checkpoint_interval_s)
+            try:
+                await self._checkpoint_wal_databases()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("background WAL checkpoint failed: %s", exc)
 
     async def audit(self) -> AuditResponse:
         payload = await self.storage.audit()
@@ -714,6 +732,29 @@ class MemoryHallRuntime:
             exc,
         )
         return message[:_MAX_EMBED_ERROR_LENGTH]
+
+    async def _checkpoint_wal_databases(self) -> None:
+        busy, log_frames, checkpointed = await self.storage.checkpoint_wal(
+            mode=_WAL_CHECKPOINT_MODE
+        )
+        logger.info(
+            "WAL checkpoint completed: busy=%s log=%s ckpt=%s db=%s",
+            busy,
+            log_frames,
+            checkpointed,
+            self.settings.database_path,
+        )
+        busy, log_frames, checkpointed = await asyncio.to_thread(
+            self.vector_store.checkpoint_wal,
+            mode=_WAL_CHECKPOINT_MODE,
+        )
+        logger.info(
+            "WAL checkpoint completed: busy=%s log=%s ckpt=%s db=%s",
+            busy,
+            log_frames,
+            checkpointed,
+            self.settings.vector_database_path,
+        )
 
     def _require_queue(self) -> asyncio.Queue[WriteJob | LinkJob | ReindexJob | None]:
         if self._queue is None:
