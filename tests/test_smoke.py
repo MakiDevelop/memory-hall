@@ -69,7 +69,7 @@ def _wal_size(path: Path) -> int:
 async def test_health_returns_ok(app_factory) -> None:
     app = app_factory()
     async with client_for_app(app) as client:
-        response = await client.get("/v1/health")
+        response = await client.get("/v1/ready")
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
@@ -82,7 +82,7 @@ async def test_health_returns_ok(app_factory) -> None:
 async def test_health_returns_degraded_when_embedder_unreachable(app_factory) -> None:
     app = app_factory(embedder=TimeoutEmbedder())
     async with client_for_app(app) as client:
-        response = await client.get("/v1/health")
+        response = await client.get("/v1/ready")
     assert response.status_code == 503
     payload = response.json()
     assert payload["status"] == "degraded"
@@ -96,13 +96,23 @@ async def test_health_reads_cached_status_without_reprobing_embedder(app_factory
     app = app_factory(embedder=embedder)
     async with client_for_app(app) as client:
         startup_calls = embedder.embed_calls
-        response = await client.get("/v1/health")
+        response = await client.get("/v1/ready")
         assert response.status_code == 200
         assert embedder.embed_calls == startup_calls
 
-        response = await client.get("/v1/health")
+        response = await client.get("/v1/ready")
         assert response.status_code == 200
         assert embedder.embed_calls == startup_calls
+
+
+@pytest.mark.asyncio
+async def test_healthz_returns_alive_even_when_embedder_unreachable(app_factory) -> None:
+    app = app_factory(embedder=TimeoutEmbedder())
+    async with client_for_app(app) as client:
+        response = await client.get("/v1/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "alive"}
 
 
 @pytest.mark.asyncio
@@ -115,7 +125,7 @@ async def test_health_uses_health_embed_timeout(tmp_path: Path) -> None:
         embedder=SlowEmbedder(sleep_s=0.2, dim=settings.vector_dim),
     )
     async with client_for_app(app) as client:
-        response = await client.get("/v1/health")
+        response = await client.get("/v1/ready")
     assert response.status_code == 503
     payload = response.json()
     assert payload["status"] == "degraded"
@@ -135,7 +145,7 @@ async def test_health_logs_subcheck_error_and_exposes_last_error(app_factory, ca
         )
         caplog.clear()
         with caplog.at_level(logging.ERROR):
-            response = await client.get("/v1/health")
+            response = await client.get("/v1/ready")
 
     assert response.status_code == 503
     payload = response.json()
@@ -146,6 +156,22 @@ async def test_health_logs_subcheck_error_and_exposes_last_error(app_factory, ca
         "health sub-check failed component=embedder" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_health_alias_matches_ready_response(app_factory) -> None:
+    app = app_factory()
+    async with client_for_app(app) as client:
+        ready_response = await client.get("/v1/ready")
+        health_response = await client.get("/v1/health")
+
+    assert ready_response.status_code == health_response.status_code
+    assert ready_response.json() == health_response.json()
+
+
+def test_dockerfile_healthcheck_uses_healthz() -> None:
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    assert "/v1/healthz" in dockerfile
 
 
 @pytest.mark.asyncio

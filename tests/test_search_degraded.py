@@ -40,3 +40,8 @@ async def test_hybrid_search_marks_timeout_degradation(app_factory) -> None:
     assert payload["degraded"] is True
     assert payload["results"][0]["entry"]["content"] == "hybrid timeout fallback note"
     assert payload["results"][0]["score_breakdown"]["semantic_status"] == "timeout"
+    assert payload["results"][0]["score_breakdown"]["hybrid_mode"] == "weighted_linear"
+    assert payload["results"][0]["score_breakdown"]["alpha"] == pytest.approx(1.0)
+    assert payload["results"][0]["score"] == pytest.approx(
+        payload["results"][0]["score_breakdown"]["bm25"]
+    )

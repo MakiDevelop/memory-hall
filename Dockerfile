@@ -112,7 +112,7 @@ USER memhall
 EXPOSE 9000
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:${MH_PORT}/v1/health || exit 1
+    CMD curl -fsS http://127.0.0.1:${MH_PORT}/v1/healthz || exit 1
 
 ENTRYPOINT ["memory-hall"]
 CMD ["serve"]

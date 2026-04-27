@@ -95,14 +95,14 @@ async def test_auth_enabled_wrong_scheme_returns_401(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_auth_enabled_health_endpoint_stays_public(tmp_path: Path) -> None:
+async def test_auth_enabled_health_endpoints_stay_public(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     settings.api_token = "secret-token-abc"
     app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
     async with client_for_app(app) as client:
-        response = await client.get("/v1/health")
-    # Health returns 200 (or 503 degraded). Point is: not 401.
-    assert response.status_code != 401
+        for path in ("/v1/healthz", "/v1/ready", "/v1/health"):
+            response = await client.get(path)
+            assert response.status_code != 401
 
 
 @pytest.mark.asyncio

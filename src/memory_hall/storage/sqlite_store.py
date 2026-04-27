@@ -837,7 +837,7 @@ class SqliteStore:
 
     @staticmethod
     def _normalize_bm25(score: float) -> float:
-        return 1.0 / (1.0 + abs(score))
+        return -score / (1.0 - score)
 
     @classmethod
     def _build_fts_document(cls, entry: Entry) -> tuple[str, str, str]:

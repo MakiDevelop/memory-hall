@@ -16,6 +16,7 @@ SYNC_EMBEDDED = "embedded"
 SYNC_FAILED = "failed"
 SyncStatus = Literal["pending", "embedded", "failed"]
 SemanticStatus = Literal["ok", "timeout", "embedder_error", "not_attempted"]
+HybridMode = Literal["weighted_linear", "rrf"]
 
 _ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -182,6 +183,8 @@ class ScoreBreakdown(BaseModel):
     bm25: float
     semantic: float
     rrf: float
+    hybrid_mode: HybridMode = "weighted_linear"
+    alpha: float = 0.3
     semantic_status: SemanticStatus = "not_attempted"
 
 

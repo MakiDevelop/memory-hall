@@ -260,7 +260,13 @@ class MemoryHallRuntime:
                     exc,
                 )
 
-        combined = self._combine_hits(payload.query, lexical_hits, semantic_hits, limit)
+        combined = self._combine_hits(
+            query=payload.query,
+            lexical_hits=lexical_hits,
+            semantic_hits=semantic_hits,
+            semantic_status=semantic_status,
+            limit=limit,
+        )
         entry_ids = [item["entry_id"] for item in combined]
         entries = await self.storage.get_entries_by_ids(tenant_id, entry_ids)
         entry_map = {entry.entry_id: entry for entry in entries}
@@ -272,11 +278,14 @@ class MemoryHallRuntime:
             results.append(
                 SearchResultItem(
                     entry_id=entry.entry_id,
-                    score=item["rrf"],
+                    score=item["score"],
                     score_breakdown=ScoreBreakdown(
                         bm25=item["bm25"],
                         semantic=item["semantic"],
-                        rrf=item["rrf"],
+                        # Legacy field name preserved for backward compatibility.
+                        rrf=item["score"],
+                        hybrid_mode=item["hybrid_mode"],
+                        alpha=item["alpha"],
                         semantic_status=semantic_status,
                     ),
                     entry=EntryDocument.from_entry(entry),
@@ -330,9 +339,15 @@ class MemoryHallRuntime:
         )
 
     async def health(self) -> HealthResponse:
+        return await self.ready()
+
+    async def ready(self) -> HealthResponse:
         if self._health_cache_stale():
             await self._refresh_health_cache()
         return self._health_cache
+
+    async def healthz(self) -> dict[str, str]:
+        return {"status": "alive"}
 
     async def _refresh_health_cache(self) -> None:
         status = "ok"
@@ -761,8 +776,66 @@ class MemoryHallRuntime:
             raise RuntimeError("runtime is not started")
         return self._queue
 
-    @staticmethod
     def _combine_hits(
+        self,
+        *,
+        query: str,
+        lexical_hits: list[tuple[str, float]],
+        semantic_hits: list[tuple[str, float]],
+        semantic_status: SemanticStatus,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if self.settings.hybrid_mode == "rrf":
+            return self._combine_hits_rrf(
+                query=query,
+                lexical_hits=lexical_hits,
+                semantic_hits=semantic_hits,
+                limit=limit,
+            )
+        return self._combine_hits_weighted_linear(
+            lexical_hits=lexical_hits,
+            semantic_hits=semantic_hits,
+            semantic_status=semantic_status,
+            limit=limit,
+        )
+
+    def _combine_hits_weighted_linear(
+        self,
+        *,
+        lexical_hits: list[tuple[str, float]],
+        semantic_hits: list[tuple[str, float]],
+        semantic_status: SemanticStatus,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if semantic_status != "ok":
+            alpha = 1.0
+        elif not lexical_hits:
+            alpha = 0.0
+        else:
+            alpha = self.settings.hybrid_alpha
+
+        lexical_map = {entry_id: score for entry_id, score in lexical_hits}
+        semantic_map = {entry_id: score for entry_id, score in semantic_hits}
+        combined = []
+        for entry_id in set(lexical_map) | set(semantic_map):
+            lexical_score = lexical_map.get(entry_id, 0.0)
+            semantic_score = semantic_map.get(entry_id, 0.0)
+            combined.append(
+                {
+                    "entry_id": entry_id,
+                    "bm25": lexical_score,
+                    "semantic": semantic_score,
+                    "score": (alpha * lexical_score) + ((1.0 - alpha) * semantic_score),
+                    "hybrid_mode": "weighted_linear",
+                    "alpha": alpha,
+                }
+            )
+        combined.sort(key=lambda item: item["score"], reverse=True)
+        return combined[:limit]
+
+    @staticmethod
+    def _combine_hits_rrf(
+        *,
         query: str,
         lexical_hits: list[tuple[str, float]],
         semantic_hits: list[tuple[str, float]],
@@ -773,18 +846,32 @@ class MemoryHallRuntime:
         for rank, (entry_id, score) in enumerate(lexical_hits, start=1):
             payload = combined.setdefault(
                 entry_id,
-                {"entry_id": entry_id, "bm25": 0.0, "semantic": 0.0, "rrf": 0.0},
+                {
+                    "entry_id": entry_id,
+                    "bm25": 0.0,
+                    "semantic": 0.0,
+                    "score": 0.0,
+                    "hybrid_mode": "rrf",
+                    "alpha": 0.0,
+                },
             )
             payload["bm25"] = score
-            payload["rrf"] += lexical_weight / (_RRF_K + rank)
+            payload["score"] += lexical_weight / (_RRF_K + rank)
         for rank, (entry_id, score) in enumerate(semantic_hits, start=1):
             payload = combined.setdefault(
                 entry_id,
-                {"entry_id": entry_id, "bm25": 0.0, "semantic": 0.0, "rrf": 0.0},
+                {
+                    "entry_id": entry_id,
+                    "bm25": 0.0,
+                    "semantic": 0.0,
+                    "score": 0.0,
+                    "hybrid_mode": "rrf",
+                    "alpha": 0.0,
+                },
             )
             payload["semantic"] = score
-            payload["rrf"] += 1.0 / (_RRF_K + rank)
-        ranked = sorted(combined.values(), key=lambda item: item["rrf"], reverse=True)
+            payload["score"] += 1.0 / (_RRF_K + rank)
+        ranked = sorted(combined.values(), key=lambda item: item["score"], reverse=True)
         return ranked[:limit]
 
 
@@ -863,9 +950,9 @@ def create_app(
 
     @app.middleware("http")
     async def require_api_token(request: Request, call_next):
-        # /v1/health is intentionally public — external uptime monitors and the
-        # in-image HEALTHCHECK probe it without credentials.
-        if request.url.path.rstrip("/") == "/v1/health":
+        # Health probe routes stay public for uptime monitors and container
+        # orchestrators.
+        if request.url.path.rstrip("/") in {"/v1/health", "/v1/ready", "/v1/healthz"}:
             return await call_next(request)
         # Backward compat: when api_token is unset (None) or empty string
         # (docker-compose `${MH_API_TOKEN:-}` expands to "" when host env is
