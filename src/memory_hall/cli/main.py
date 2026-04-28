@@ -29,7 +29,17 @@ def _settings() -> Settings:
 
 
 def _client(base_url: str, timeout_s: float) -> httpx.Client:
-    return httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout_s)
+    settings = _settings()
+    headers = (
+        {"Authorization": f"Bearer {settings.api_token}"}
+        if settings.api_token
+        else None
+    )
+    return httpx.Client(
+        base_url=base_url.rstrip("/"),
+        timeout=timeout_s,
+        headers=headers,
+    )
 
 
 def _parse_metadata(value: str | None) -> dict[str, Any]:
