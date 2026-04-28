@@ -205,3 +205,38 @@ async def test_admin_token_set_health_endpoints_stay_public(tmp_path: Path) -> N
         for path in ("/v1/healthz", "/v1/ready", "/v1/health"):
             response = await client.get(path)
             assert response.status_code != 401
+
+
+# ---------- ADR 0009: config-level invariants (fail-fast) ----------------
+
+
+def test_settings_admin_token_without_api_token_fails(tmp_path: Path) -> None:
+    """Codex review finding #1 [HIGH]: admin_token set + api_token unset would
+    fail-open on non-admin paths. Settings load must reject this combo."""
+    from pydantic import ValidationError
+
+    from memory_hall.config import Settings
+
+    with pytest.raises(ValidationError, match="admin_token requires api_token"):
+        Settings(
+            database_path=tmp_path / "db.sqlite3",
+            vector_database_path=tmp_path / "vec.sqlite3",
+            admin_token="admin-only-token",
+            api_token=None,
+        )
+
+
+def test_settings_admin_token_equal_to_api_token_fails(tmp_path: Path) -> None:
+    """Codex review finding #2 [MEDIUM]: equal tokens silently nullify the
+    two-tier separation. Settings load must reject this combo."""
+    from pydantic import ValidationError
+
+    from memory_hall.config import Settings
+
+    with pytest.raises(ValidationError, match="admin_token must differ from api_token"):
+        Settings(
+            database_path=tmp_path / "db.sqlite3",
+            vector_database_path=tmp_path / "vec.sqlite3",
+            api_token="same-token",
+            admin_token="same-token",
+        )

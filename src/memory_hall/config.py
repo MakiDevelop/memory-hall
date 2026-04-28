@@ -62,6 +62,14 @@ class Settings(BaseSettings):
             self.embed_dim = self.vector_dim
         return self
 
+    @model_validator(mode="after")
+    def _validate_auth_tokens(self) -> Settings:
+        if self.admin_token and not self.api_token:
+            raise ValueError("admin_token requires api_token (would fail-open on non-admin paths)")
+        if self.admin_token and self.api_token and self.admin_token == self.api_token:
+            raise ValueError("admin_token must differ from api_token")
+        return self
+
     def prepare_paths(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_database_path.parent.mkdir(parents=True, exist_ok=True)
