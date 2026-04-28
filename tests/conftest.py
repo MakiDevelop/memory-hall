@@ -81,6 +81,7 @@ def deterministic_embedder() -> DeterministicEmbedder:
 @pytest.fixture(autouse=True)
 def isolate_api_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MH_API_TOKEN", raising=False)
+    monkeypatch.delenv("MH_ADMIN_TOKEN", raising=False)
 
 
 @pytest.fixture()
