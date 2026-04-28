@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     list_default_limit: int = 50
     search_default_limit: int = 20
     search_candidate_multiplier: int = 5
-    hybrid_mode: Literal["weighted_linear", "rrf"] = "weighted_linear"
+    hybrid_mode: Literal["weighted_linear", "rrf"] = "rrf"
     hybrid_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
     request_timeout_s: float = 5.0
     reindex_batch_size: int = 500

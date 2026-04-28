@@ -85,9 +85,17 @@ def isolate_api_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture()
 def app_factory(tmp_path: Path):
-    def factory(*, tenant_id: str = "default", embedder=None, base_dir: Path | None = None):
+    def factory(
+        *,
+        tenant_id: str = "default",
+        embedder=None,
+        base_dir: Path | None = None,
+        hybrid_mode: str | None = None,
+    ):
         root = base_dir or tmp_path
         settings = build_settings(root, tenant_id=tenant_id)
+        if hybrid_mode is not None:
+            settings.hybrid_mode = hybrid_mode  # type: ignore[assignment]
         active_embedder = embedder or DeterministicEmbedder(dim=settings.vector_dim)
         return create_app(settings=settings, embedder=active_embedder)
 

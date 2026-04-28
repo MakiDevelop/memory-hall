@@ -33,7 +33,7 @@ class WeightedHybridEmbedder(DeterministicEmbedder):
 
 @pytest.mark.asyncio
 async def test_weighted_linear_prefers_rare_lexical_target(app_factory) -> None:
-    app = app_factory(embedder=WeightedHybridEmbedder())
+    app = app_factory(embedder=WeightedHybridEmbedder(), hybrid_mode="weighted_linear")
     async with client_for_app(app) as client:
         target = await client.post(
             "/v1/memory/write",
@@ -70,7 +70,7 @@ async def test_weighted_linear_prefers_rare_lexical_target(app_factory) -> None:
 async def test_weighted_linear_recovers_semantic_paraphrase_without_lexical_overlap(
     app_factory,
 ) -> None:
-    app = app_factory(embedder=WeightedHybridEmbedder())
+    app = app_factory(embedder=WeightedHybridEmbedder(), hybrid_mode="weighted_linear")
     async with client_for_app(app) as client:
         relevant = await client.post(
             "/v1/memory/write",
@@ -115,7 +115,7 @@ async def test_weighted_linear_recovers_semantic_paraphrase_without_lexical_over
 
 @pytest.mark.asyncio
 async def test_weighted_linear_rewards_entries_that_hit_both_signals(app_factory) -> None:
-    app = app_factory(embedder=WeightedHybridEmbedder())
+    app = app_factory(embedder=WeightedHybridEmbedder(), hybrid_mode="weighted_linear")
     async with client_for_app(app) as client:
         lexical_only = await client.post(
             "/v1/memory/write",

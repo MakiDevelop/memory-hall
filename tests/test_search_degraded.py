@@ -7,7 +7,7 @@ from tests.conftest import TimeoutEmbedder, client_for_app
 
 @pytest.mark.asyncio
 async def test_hybrid_search_marks_timeout_degradation(app_factory) -> None:
-    app = app_factory()
+    app = app_factory(hybrid_mode="weighted_linear")
     async with client_for_app(app) as client:
         write_response = await client.post(
             "/v1/memory/write",
