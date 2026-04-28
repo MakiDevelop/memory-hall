@@ -130,6 +130,8 @@ See [`docs/adr/0003-engine-library-vs-deployment-platform.md`](docs/adr/0003-eng
 
 No entry is privileged — they all hit the same backend, so no single-point-of-failure path.
 
+> **Agents reading this**: see [`docs/agent-integration.md`](docs/agent-integration.md) for a decision tree that picks the right surface based on your sandbox, plus the auth + install gotchas that have bitten real Codex / Gemini sessions.
+
 ### Embedded (in-process) use
 
 Some agents run in sandboxes that block localhost sockets (Codex CLI, some Gemini setups, restricted containers). For those, skip HTTP entirely:
