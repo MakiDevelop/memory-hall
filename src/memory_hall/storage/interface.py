@@ -40,11 +40,19 @@ class Storage(Protocol):
         agent_id: str | None = None,
         types: list[str] | None = None,
         tags: list[str] | None = None,
+        sync_status: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
         cursor: str | None = None,
     ) -> list[Entry]: ...
+
+    async def count_entries(
+        self,
+        tenant_id: str,
+        *,
+        sync_status: str | None = None,
+    ) -> int: ...
 
     async def search_lexical(
         self,
@@ -74,5 +82,7 @@ class Storage(Protocol):
     async def get_references_out(self, tenant_id: str, entry_id: str) -> list[Entry]: ...
 
     async def get_references_in(self, tenant_id: str, entry_id: str) -> list[Entry]: ...
+
+    async def checkpoint_wal(self, *, mode: str = "TRUNCATE") -> tuple[int, int, int]: ...
 
     async def audit(self) -> dict[str, object]: ...

@@ -97,6 +97,18 @@ def test_normalize_fts_query_edge_cases() -> None:
     assert '"系統"' in normalized
 
 
+def test_normalize_bm25_preserves_rank_order_for_negative_scores() -> None:
+    raw_scores = [-15.0, -10.0, -5.0, -1.0, -0.1]
+    normalized = [SqliteStore._normalize_bm25(score) for score in raw_scores]
+
+    assert normalized == sorted(normalized, reverse=True)
+    assert normalized[0] == pytest.approx(0.9375)
+    assert normalized[1] == pytest.approx(10.0 / 11.0)
+    assert normalized[2] == pytest.approx(5.0 / 6.0)
+    assert normalized[3] == pytest.approx(0.5)
+    assert normalized[4] == pytest.approx(1.0 / 11.0)
+
+
 @pytest.mark.asyncio
 async def test_reindex_fts_rewrites_legacy_rows(tmp_path) -> None:
     settings = build_settings(tmp_path)

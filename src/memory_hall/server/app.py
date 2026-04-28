@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import random
 import re
 from contextlib import asynccontextmanager, suppress
@@ -30,10 +31,10 @@ from memory_hall.models import (
     ListEntriesResponse,
     ReindexResponse,
     ScoreBreakdown,
-    SemanticStatus,
     SearchMemoryRequest,
     SearchMemoryResponse,
     SearchResultItem,
+    SemanticStatus,
     WriteMemoryRequest,
     WriteOutcome,
     build_content_hash,
@@ -53,6 +54,8 @@ _BACKGROUND_REINDEX_INTERVAL_S = 120.0
 _HEALTH_PROBE_INTERVAL_S = 30.0
 _HEALTH_CACHE_TTL_S = 60.0
 _REINDEX_EMBED_BATCH_SIZE = 16
+_REINDEX_SCAN_PAGE_SIZE = 200
+_WAL_CHECKPOINT_MODE = "TRUNCATE"
 _EMBED_FAILURE_LIMIT = 5
 _MAX_EMBED_ERROR_LENGTH = 500
 
@@ -99,10 +102,12 @@ class MemoryHallRuntime:
         self._worker: asyncio.Task[None] | None = None
         self._reindex_worker: asyncio.Task[None] | None = None
         self._health_probe_worker: asyncio.Task[None] | None = None
+        self._wal_checkpoint_worker: asyncio.Task[None] | None = None
         self._background_reindex_interval_s = _BACKGROUND_REINDEX_INTERVAL_S
         self._background_reindex_jitter_s = min(15.0, _BACKGROUND_REINDEX_INTERVAL_S * 0.1)
         self._health_probe_interval_s = _HEALTH_PROBE_INTERVAL_S
         self._health_cache_ttl_s = _HEALTH_CACHE_TTL_S
+        self._wal_checkpoint_interval_s = self.settings.wal_checkpoint_interval_s
         self._health_cache_checked_at = None
         self._health_last_success_at = None
         self._health_cache = HealthResponse(
@@ -123,8 +128,13 @@ class MemoryHallRuntime:
         self._worker = asyncio.create_task(self._consume_writes())
         self._reindex_worker = asyncio.create_task(self._run_background_reindex())
         self._health_probe_worker = asyncio.create_task(self._run_health_probe())
+        self._wal_checkpoint_worker = asyncio.create_task(self._run_wal_checkpoint())
 
     async def stop(self) -> None:
+        if self._wal_checkpoint_worker is not None:
+            self._wal_checkpoint_worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._wal_checkpoint_worker
         if self._health_probe_worker is not None:
             self._health_probe_worker.cancel()
             with suppress(asyncio.CancelledError):
@@ -250,7 +260,13 @@ class MemoryHallRuntime:
                     exc,
                 )
 
-        combined = self._combine_hits(payload.query, lexical_hits, semantic_hits, limit)
+        combined = self._combine_hits(
+            query=payload.query,
+            lexical_hits=lexical_hits,
+            semantic_hits=semantic_hits,
+            semantic_status=semantic_status,
+            limit=limit,
+        )
         entry_ids = [item["entry_id"] for item in combined]
         entries = await self.storage.get_entries_by_ids(tenant_id, entry_ids)
         entry_map = {entry.entry_id: entry for entry in entries}
@@ -262,11 +278,14 @@ class MemoryHallRuntime:
             results.append(
                 SearchResultItem(
                     entry_id=entry.entry_id,
-                    score=item["rrf"],
+                    score=item["score"],
                     score_breakdown=ScoreBreakdown(
                         bm25=item["bm25"],
                         semantic=item["semantic"],
-                        rrf=item["rrf"],
+                        # Legacy field name preserved for backward compatibility.
+                        rrf=item["score"],
+                        hybrid_mode=item["hybrid_mode"],
+                        alpha=item["alpha"],
                         semantic_status=semantic_status,
                     ),
                     entry=EntryDocument.from_entry(entry),
@@ -374,6 +393,16 @@ class MemoryHallRuntime:
                 raise
             except Exception as exc:
                 logger.warning("health probe failed: %s", exc)
+
+    async def _run_wal_checkpoint(self) -> None:
+        while True:
+            await asyncio.sleep(self._wal_checkpoint_interval_s)
+            try:
+                await self._checkpoint_wal_databases()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("background WAL checkpoint failed: %s", exc)
 
     async def audit(self) -> AuditResponse:
         payload = await self.storage.audit()
@@ -495,35 +524,78 @@ class MemoryHallRuntime:
         return EntryDocument.from_entry(entry)
 
     async def _handle_reindex(self, job: ReindexJob) -> ReindexResponse:
-        if job.pending_only:
-            all_entries = await self.storage.list_pending_entries(
-                job.tenant_id,
-                limit=self.settings.reindex_batch_size,
-            )
-        else:
-            all_entries = await self.storage.list_entries(job.tenant_id, limit=None)
-        scanned = len(all_entries)
-        candidates: list[Entry] = []
+        sync_status = SYNC_PENDING if job.pending_only else None
+        total_entries = await self.storage.count_entries(
+            job.tenant_id,
+            sync_status=sync_status,
+        )
+        if total_entries == 0:
+            return ReindexResponse(scanned=0, embedded=0, pending=0)
+
+        total_batches = max(1, math.ceil(total_entries / _REINDEX_SCAN_PAGE_SIZE))
+        scanned = 0
         embedded_count = 0
         pending_count = 0
-        for entry in all_entries:
-            if not job.pending_only:
-                needs_reindex = entry.sync_status != SYNC_EMBEDDED
-                if not needs_reindex:
-                    needs_reindex = not await asyncio.to_thread(
-                        self.vector_store.contains,
-                        entry.tenant_id,
-                        entry.entry_id,
+        cursor: str | None = None
+        batch_number = 0
+
+        try:
+            while scanned < total_entries:
+                entries = await self.storage.list_entries(
+                    job.tenant_id,
+                    sync_status=sync_status,
+                    limit=_REINDEX_SCAN_PAGE_SIZE,
+                    cursor=cursor,
+                )
+                if not entries:
+                    break
+
+                batch_number += 1
+                scanned += len(entries)
+                candidates: list[Entry] = []
+                for entry in entries:
+                    if not job.pending_only:
+                        needs_reindex = entry.sync_status != SYNC_EMBEDDED
+                        if not needs_reindex:
+                            needs_reindex = not await asyncio.to_thread(
+                                self.vector_store.contains,
+                                entry.tenant_id,
+                                entry.entry_id,
+                            )
+                        if not needs_reindex:
+                            continue
+                    candidates.append(entry)
+
+                for offset in range(0, len(candidates), _REINDEX_EMBED_BATCH_SIZE):
+                    embedded, pending = await self._embed_reindex_batch(
+                        candidates[offset : offset + _REINDEX_EMBED_BATCH_SIZE]
                     )
-                if not needs_reindex:
-                    continue
-            candidates.append(entry)
-        for offset in range(0, len(candidates), _REINDEX_EMBED_BATCH_SIZE):
-            embedded, pending = await self._embed_reindex_batch(
-                candidates[offset : offset + _REINDEX_EMBED_BATCH_SIZE]
+                    embedded_count += embedded
+                    pending_count += pending
+
+                logger.info(
+                    "reindex batch %s/%s, %s done tenant_id=%s pending_only=%s",
+                    batch_number,
+                    total_batches,
+                    scanned,
+                    job.tenant_id,
+                    job.pending_only,
+                )
+                if scanned >= total_entries:
+                    break
+                tail = entries[-1]
+                cursor = encode_cursor(tail.created_at, tail.entry_id)
+        except asyncio.CancelledError:
+            logger.info(
+                "reindex cancelled tenant_id=%s batches=%s scanned=%s embedded=%s pending=%s",
+                job.tenant_id,
+                batch_number,
+                scanned,
+                embedded_count,
+                pending_count,
             )
-            embedded_count += embedded
-            pending_count += pending
+            raise
+
         return ReindexResponse(scanned=scanned, embedded=embedded_count, pending=pending_count)
 
     async def _embed_reindex_batch(self, entries: list[Entry]) -> tuple[int, int]:
@@ -670,13 +742,94 @@ class MemoryHallRuntime:
         )
         return message[:_MAX_EMBED_ERROR_LENGTH]
 
+    async def _checkpoint_wal_databases(self) -> None:
+        busy, log_frames, checkpointed = await self.storage.checkpoint_wal(
+            mode=_WAL_CHECKPOINT_MODE
+        )
+        logger.info(
+            "WAL checkpoint completed: busy=%s log=%s ckpt=%s db=%s",
+            busy,
+            log_frames,
+            checkpointed,
+            self.settings.database_path,
+        )
+        busy, log_frames, checkpointed = await asyncio.to_thread(
+            self.vector_store.checkpoint_wal,
+            mode=_WAL_CHECKPOINT_MODE,
+        )
+        logger.info(
+            "WAL checkpoint completed: busy=%s log=%s ckpt=%s db=%s",
+            busy,
+            log_frames,
+            checkpointed,
+            self.settings.vector_database_path,
+        )
+
     def _require_queue(self) -> asyncio.Queue[WriteJob | LinkJob | ReindexJob | None]:
         if self._queue is None:
             raise RuntimeError("runtime is not started")
         return self._queue
 
-    @staticmethod
     def _combine_hits(
+        self,
+        *,
+        query: str,
+        lexical_hits: list[tuple[str, float]],
+        semantic_hits: list[tuple[str, float]],
+        semantic_status: SemanticStatus,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if self.settings.hybrid_mode == "rrf":
+            return self._combine_hits_rrf(
+                query=query,
+                lexical_hits=lexical_hits,
+                semantic_hits=semantic_hits,
+                limit=limit,
+            )
+        return self._combine_hits_weighted_linear(
+            lexical_hits=lexical_hits,
+            semantic_hits=semantic_hits,
+            semantic_status=semantic_status,
+            limit=limit,
+        )
+
+    def _combine_hits_weighted_linear(
+        self,
+        *,
+        lexical_hits: list[tuple[str, float]],
+        semantic_hits: list[tuple[str, float]],
+        semantic_status: SemanticStatus,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if semantic_status != "ok":
+            alpha = 1.0
+        elif not lexical_hits:
+            alpha = 0.0
+        else:
+            alpha = self.settings.hybrid_alpha
+
+        lexical_map = {entry_id: score for entry_id, score in lexical_hits}
+        semantic_map = {entry_id: score for entry_id, score in semantic_hits}
+        combined = []
+        for entry_id in set(lexical_map) | set(semantic_map):
+            lexical_score = lexical_map.get(entry_id, 0.0)
+            semantic_score = semantic_map.get(entry_id, 0.0)
+            combined.append(
+                {
+                    "entry_id": entry_id,
+                    "bm25": lexical_score,
+                    "semantic": semantic_score,
+                    "score": (alpha * lexical_score) + ((1.0 - alpha) * semantic_score),
+                    "hybrid_mode": "weighted_linear",
+                    "alpha": alpha,
+                }
+            )
+        combined.sort(key=lambda item: item["score"], reverse=True)
+        return combined[:limit]
+
+    @staticmethod
+    def _combine_hits_rrf(
+        *,
         query: str,
         lexical_hits: list[tuple[str, float]],
         semantic_hits: list[tuple[str, float]],
@@ -687,18 +840,32 @@ class MemoryHallRuntime:
         for rank, (entry_id, score) in enumerate(lexical_hits, start=1):
             payload = combined.setdefault(
                 entry_id,
-                {"entry_id": entry_id, "bm25": 0.0, "semantic": 0.0, "rrf": 0.0},
+                {
+                    "entry_id": entry_id,
+                    "bm25": 0.0,
+                    "semantic": 0.0,
+                    "score": 0.0,
+                    "hybrid_mode": "rrf",
+                    "alpha": 0.0,
+                },
             )
             payload["bm25"] = score
-            payload["rrf"] += lexical_weight / (_RRF_K + rank)
+            payload["score"] += lexical_weight / (_RRF_K + rank)
         for rank, (entry_id, score) in enumerate(semantic_hits, start=1):
             payload = combined.setdefault(
                 entry_id,
-                {"entry_id": entry_id, "bm25": 0.0, "semantic": 0.0, "rrf": 0.0},
+                {
+                    "entry_id": entry_id,
+                    "bm25": 0.0,
+                    "semantic": 0.0,
+                    "score": 0.0,
+                    "hybrid_mode": "rrf",
+                    "alpha": 0.0,
+                },
             )
             payload["semantic"] = score
-            payload["rrf"] += 1.0 / (_RRF_K + rank)
-        ranked = sorted(combined.values(), key=lambda item: item["rrf"], reverse=True)
+            payload["score"] += 1.0 / (_RRF_K + rank)
+        ranked = sorted(combined.values(), key=lambda item: item["score"], reverse=True)
         return ranked[:limit]
 
 
@@ -777,14 +944,26 @@ def create_app(
 
     @app.middleware("http")
     async def require_api_token(request: Request, call_next):
-        # /v1/health is intentionally public — external uptime monitors and the
-        # in-image HEALTHCHECK probe it without credentials.
-        if request.url.path.rstrip("/") == "/v1/health":
+        # Health probe routes stay public for uptime monitors and container
+        # orchestrators.
+        path = request.url.path.rstrip("/")
+        if path == "/v1/health":
             return await call_next(request)
-        # Backward compat: when api_token is unset (None) or empty string
-        # (docker-compose `${MH_API_TOKEN:-}` expands to "" when host env is
-        # unset — pydantic reads that as "", not None), auth is disabled.
-        if not active_settings.api_token:
+        # /v1/admin/* with explicit admin_token configured requires the
+        # admin_token; the regular api_token is rejected. When admin_token is
+        # unset, admin paths fall back to api_token (ADR 0007 backward compat).
+        is_admin_path = path == "/v1/admin" or path.startswith("/v1/admin/")
+        if is_admin_path and active_settings.admin_token:
+            expected = active_settings.admin_token
+            invalid_msg = "invalid admin token"
+        elif active_settings.api_token:
+            expected = active_settings.api_token
+            invalid_msg = "invalid token"
+        else:
+            # Backward compat: when api_token is unset (None) or empty string
+            # (docker-compose `${MH_API_TOKEN:-}` expands to "" when host env
+            # is unset — pydantic reads that as "", not None), auth is
+            # disabled.
             return await call_next(request)
         header = request.headers.get("authorization", "")
         prefix = "Bearer "
@@ -794,10 +973,10 @@ def create_app(
                 content={"detail": "missing bearer token"},
             )
         received = header[len(prefix):]
-        if not hmac.compare_digest(received, active_settings.api_token):
+        if not hmac.compare_digest(received, expected):
             return JSONResponse(
                 status_code=401,
-                content={"detail": "invalid token"},
+                content={"detail": invalid_msg},
             )
         return await call_next(request)
 
