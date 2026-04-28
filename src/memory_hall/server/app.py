@@ -952,12 +952,24 @@ def create_app(
     async def require_api_token(request: Request, call_next):
         # Health probe routes stay public for uptime monitors and container
         # orchestrators.
-        if request.url.path.rstrip("/") in {"/v1/health", "/v1/ready", "/v1/healthz"}:
+        path = request.url.path.rstrip("/")
+        if path in {"/v1/health", "/v1/ready", "/v1/healthz"}:
             return await call_next(request)
-        # Backward compat: when api_token is unset (None) or empty string
-        # (docker-compose `${MH_API_TOKEN:-}` expands to "" when host env is
-        # unset — pydantic reads that as "", not None), auth is disabled.
-        if not active_settings.api_token:
+        # /v1/admin/* with explicit admin_token configured requires the
+        # admin_token; the regular api_token is rejected. When admin_token is
+        # unset, admin paths fall back to api_token (ADR 0007 backward compat).
+        is_admin_path = path == "/v1/admin" or path.startswith("/v1/admin/")
+        if is_admin_path and active_settings.admin_token:
+            expected = active_settings.admin_token
+            invalid_msg = "invalid admin token"
+        elif active_settings.api_token:
+            expected = active_settings.api_token
+            invalid_msg = "invalid token"
+        else:
+            # Backward compat: when api_token is unset (None) or empty string
+            # (docker-compose `${MH_API_TOKEN:-}` expands to "" when host env
+            # is unset — pydantic reads that as "", not None), auth is
+            # disabled.
             return await call_next(request)
         header = request.headers.get("authorization", "")
         prefix = "Bearer "
@@ -967,10 +979,10 @@ def create_app(
                 content={"detail": "missing bearer token"},
             )
         received = header[len(prefix):]
-        if not hmac.compare_digest(received, active_settings.api_token):
+        if not hmac.compare_digest(received, expected):
             return JSONResponse(
                 status_code=401,
-                content={"detail": "invalid token"},
+                content={"detail": invalid_msg},
             )
         return await call_next(request)
 

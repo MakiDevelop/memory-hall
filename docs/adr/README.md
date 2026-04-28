@@ -12,6 +12,7 @@ Numbered, immutable records of significant design choices. Append new entries; n
 | [0006](0006-http-embedder-embed-queue-isolation.md) | HttpEmbedder: embed path isolation from LLM queue | Accepted (2026-04-20) |
 | [0007](0007-minimal-token-auth.md) | Minimal Token auth (single-tenant deployment shim) | Accepted (2026-04-23) |
 | [0008](0008-personal-pki-lightweight-stance.md) | memhall 是 personal PKI，輕量 > 完整 | Accepted (2026-04-28) |
+| [0009](0009-admin-gate.md) | Admin gate（two-tier bearer，不做 HMAC） | Accepted (2026-04-28) |
 
 ## Format
 

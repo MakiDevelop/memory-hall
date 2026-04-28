@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     vector_dim: int = 1024
     default_tenant_id: str = "default"
     api_token: str | None = None
+    admin_token: str | None = None
     list_default_limit: int = 50
     search_default_limit: int = 20
     search_candidate_multiplier: int = 5
