@@ -100,9 +100,8 @@ async def test_auth_enabled_health_endpoints_stay_public(tmp_path: Path) -> None
     settings.api_token = "secret-token-abc"
     app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
     async with client_for_app(app) as client:
-        for path in ("/v1/healthz", "/v1/ready", "/v1/health"):
-            response = await client.get(path)
-            assert response.status_code != 401
+        response = await client.get("/v1/health")
+        assert response.status_code != 401
 
 
 @pytest.mark.asyncio
@@ -202,9 +201,8 @@ async def test_admin_token_set_health_endpoints_stay_public(tmp_path: Path) -> N
     settings.admin_token = "admin-only-token"
     app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
     async with client_for_app(app) as client:
-        for path in ("/v1/healthz", "/v1/ready", "/v1/health"):
-            response = await client.get(path)
-            assert response.status_code != 401
+        response = await client.get("/v1/health")
+        assert response.status_code != 401
 
 
 # ---------- ADR 0009: config-level invariants (fail-fast) ----------------

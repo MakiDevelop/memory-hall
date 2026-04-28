@@ -339,15 +339,9 @@ class MemoryHallRuntime:
         )
 
     async def health(self) -> HealthResponse:
-        return await self.ready()
-
-    async def ready(self) -> HealthResponse:
         if self._health_cache_stale():
             await self._refresh_health_cache()
         return self._health_cache
-
-    async def healthz(self) -> dict[str, str]:
-        return {"status": "alive"}
 
     async def _refresh_health_cache(self) -> None:
         status = "ok"
@@ -953,7 +947,7 @@ def create_app(
         # Health probe routes stay public for uptime monitors and container
         # orchestrators.
         path = request.url.path.rstrip("/")
-        if path in {"/v1/health", "/v1/ready", "/v1/healthz"}:
+        if path == "/v1/health":
             return await call_next(request)
         # /v1/admin/* with explicit admin_token configured requires the
         # admin_token; the regular api_token is rejected. When admin_token is

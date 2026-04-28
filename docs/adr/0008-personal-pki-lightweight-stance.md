@@ -38,6 +38,7 @@ memhall 接受以下四個北極星，依優先序：
 明確**不做**的清單（除非觸發 sunset criteria）：
 
 - ❌ k8s 風格的 liveness/readiness/startup probe 三件套（單一 launchd container 不需要）
+  - **2026-04-28 補執行**：Phase A.5 PR2 Patch F 引入的 `/v1/healthz` + `/v1/ready` 拆分已 revert，回到單一 `/v1/health`（200/503，body 含完整 status）。理由：mini 用 `restart: unless-stopped`，health unhealthy 不會自動 restart，flapping 風險為零；單一 endpoint 對個人 PKI 維運心智成本更低
 - ❌ Hybrid search 的可調 α / mode switch（除非有 retrieval benchmark 證明非 RRF 更好）
 - ❌ HMAC + nonce + per-key rotation（ADR 0007 minimal token + Tailscale ACL 已足夠）
 - ❌ Principal registry / role mapping / `key_id → role/ns/agent` 表

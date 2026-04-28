@@ -28,7 +28,7 @@ When `MH_ADMIN_TOKEN` is set in addition to `MH_API_TOKEN`:
 - `/v1/admin/*` paths require `Authorization: Bearer <MH_ADMIN_TOKEN>` — the regular `MH_API_TOKEN` is **rejected** on admin paths
 - The regular `MH_API_TOKEN` continues to gate non-admin paths (`/v1/memory/*`)
 - `MH_ADMIN_TOKEN` does **not** grant access to non-admin paths (least privilege both ways)
-- `/v1/health*` remains public
+- `/v1/health` remains public
 
 When `MH_ADMIN_TOKEN` is unset, admin paths fall back to `MH_API_TOKEN` (backward compatible with ADR 0007). Operators are encouraged to also lock `/v1/admin/*` to specific devices via Tailscale ACL as defense-in-depth. Rationale in [ADR 0009](adr/0009-admin-gate.md).
 
