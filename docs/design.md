@@ -1,6 +1,6 @@
 # memory-hall — Design
 
-> Status: **Accepted** v0.1 (2026-04-18) — incorporates Codex dissent + Gemini architecture review + Max best practice + Grok community pulse
+> Status: **Accepted** v0.1 (2026-04-18); implementation notes refreshed for the v0.2.x dogfood branch.
 
 ## 1. Purpose
 
@@ -24,13 +24,13 @@ Independent precedent (community, April 2026): the [ERINYS project](https://x.co
 - **G3** — Cross-session (open-ended pickup, not chat-bound)
 - **G4** — Search quality matching or exceeding mem0 for "find what I wrote about X"
 - **G5** — Multi-tenant data model from day one (`tenant_id` first-class); v0.1 runtime is single-tenant `default` (see ADR 0002)
-- **G6** — Min local (Ollama + sqlite-vec, zero external deps), max distributed (Qdrant + remote embedder host, multi-machine)
+- **G6** — Min local (Ollama + sqlite-vec, zero external deps), max distributed (remote embedder host now; external vector stores remain adapter candidates)
 - **G7** — No middleware monopoly: HTTP REST is primary, MCP and CLI are convenience layers, none is the only legal path
 
 ## 3. Non-Goals
 
 - **N1** — Sync fact extraction on write (optional async enrichment in v2)
-- **N2** — Migrating existing mem0 stores in v0.1 (read-only legacy access; `mh import-mem0` script committed for v0.2 — see ADR 0001)
+- **N2** — Migrating existing mem0 stores in v0.1 (read-only legacy access; one-shot import remains future work — see ADR 0001)
 - **N3** — UI / TUI / graph visualization (future, separate package)
 - **N4** — SaaS hosting (self-host first; SaaS only if community demand)
 - **N5** — Replacing chat-bound memory (this is for agents, not consumer chat apps)
@@ -39,7 +39,7 @@ Independent precedent (community, April 2026): the [ERINYS project](https://x.co
 
 memory-hall is the **engine library**:
 - Storage, embedder, search, CLI, optional minimal FastAPI server for solo use
-- Pip-installable, runs without auth in local-only setups
+- Pip-installable, runs without auth in local-only setups; can enable Bearer/admin-token shims for private-network deployments
 
 [`memory-gateway`](https://github.com/MakiDevelop/memory-gateway) is the **deployment platform** that wraps memory-hall with HMAC auth, ACL, staging, proposals, and event-sourced governance.
 
@@ -59,16 +59,16 @@ See [ADR 0003](adr/0003-engine-library-vs-deployment-platform.md) for the full s
 ┌──────────────────────────────────────────────────────────────┐
 │  memory-hall.engine                                           │
 │  - storage / embedder / search                                │
-│  - optional standalone FastAPI server (no auth, local-only)   │
-│  - middleware: tenant + dev-mode auth (full HMAC in gateway)  │
+│  - optional standalone FastAPI server                         │
+│  - middleware: tenant + optional Bearer/admin-token shims     │
 └────┬─────────────────────────────────────┬───────────────────┘
      │ write                               │ search
      ↓                                     ↓
 ┌──────────────────────┐    ┌─────────────────────────────────┐
 │  Storage             │    │  Vector store                    │
-│  - SQLite (WAL)      │    │  - sqlite-vec v0.1.6 (default)   │
-│  - aiosqlite client  │    │  - qdrant adapter (when scale    │
-│  - single-writer Q   │    │     >50K vectors or multi-host)  │
+│  - SQLite (WAL)      │    │  - sqlite-vec v0.1.9 (default)   │
+│  - aiosqlite client  │    │  - adapter boundary retained     │
+│  - single-writer Q   │    │     for future external stores   │
 └──────────────────────┘    └─────────────────────────────────┘
                                           ↑
                                           │ embed-on-write (2s timeout)
@@ -84,7 +84,7 @@ See [ADR 0003](adr/0003-engine-library-vs-deployment-platform.md) for the full s
 ### Three entry points
 
 1. **HTTP REST** — primary, language-agnostic
-2. **MCP server** (v0.2+) — wraps HTTP for Claude convenience
+2. **MCP wrapper example** — wraps HTTP for Claude convenience; not a privileged core path
 3. **CLI `mh`** — wraps HTTP for Codex / shell / non-MCP agents
 
 Optional **Unix Domain Socket** transport for same-host agents (Codex CLI, local scripts) avoids TCP overhead.
@@ -119,16 +119,16 @@ All paths hit the same engine. **No path is privileged** — any one being down 
 
 - `tenant_id` is on every entry, every query, every API call
 - v0.1: single tenant `"default"` enforced at middleware (see ADR 0002)
-- v0.2+: multi-tenant runtime + `X-Tenant-Override` header for principals with `role: admin`
+- v0.2.x: schema remains tenant-first; runtime still defaults to the single `default` tenant.
 
 ### ACL (within a tenant)
 
-- Each principal (HMAC key) has read/write namespace allowlist (gateway-deployed only; standalone has no auth)
-- `agent_id` must match principal's allowed agent list (prevents Codex from impersonating Claude)
+- Full per-principal namespace allowlists remain `memory-gateway` / future hardened-auth work.
+- In standalone minimal-token mode, `agent_id` is still caller-declared and not cryptographically bound to the token.
 
 ### Wire format relationship to mem0
 
-Field names like `content`, `tags`, `metadata`, `created_at` are intentionally aligned with mem0's de facto schema, so the planned `mh import-mem0` script (v0.2 roadmap) is a near-mechanical mapping. memory-hall is **structurally richer** (`tenant_id`, `agent_id`, `references`, `sync_status`, `content_hash` have no mem0 equivalent), so the relationship is "compatible-on-import, not drop-in-replacement." See [ADR 0004](adr/0004-standardization-stance.md) for the broader stance on whether to push memory-hall as an industry spec.
+Field names like `content`, `tags`, `metadata`, `created_at` are intentionally aligned with mem0's de facto schema, so a future one-shot import can be a near-mechanical mapping. memory-hall is **structurally richer** (`tenant_id`, `agent_id`, `references`, `sync_status`, `content_hash` have no mem0 equivalent), so the relationship is "compatible-on-import, not drop-in-replacement." See [ADR 0004](adr/0004-standardization-stance.md) for the broader stance on whether to push memory-hall as an industry spec.
 
 ## 7. Storage Layer
 
@@ -176,10 +176,11 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
 
 ### Vector store
 
-**Protocol** — pluggable. Two implementations shipped:
+**Protocol** — pluggable. One implementation ships today:
 
-- **sqlite-vec v0.1.6** (default, pinned) — embedded, zero external deps. Brute-force only; comfortable up to ~50K vectors. Beyond that, switch to qdrant.
-- **qdrant** — production / multi-host / large-scale. Same SQLite stays as authoritative metadata store.
+- **sqlite-vec v0.1.9** (default, pinned) — embedded, zero external deps. Uses `vec0` when available and falls back to Python cosine when the extension cannot load.
+
+The compose file can start Qdrant as an optional sidecar for experiments, but no Qdrant adapter is wired into the runtime yet. Same for Postgres: it is a future adapter candidate, not current behavior.
 
 ```python
 class VectorStore(Protocol):
@@ -221,21 +222,21 @@ class Embedder(Protocol):
 
 ### SLA caveats
 
-- **`P99 < 100ms`** applies to local-only deployment (Ollama on same host, sqlite-vec, single-tenant). Remote embedder + qdrant + multi-host has softer targets, primarily bounded by network and embedder latency. Production deployments should set their own SLA based on measured baseline.
+- **`P99 < 100ms`** applies to local-only deployment (Ollama on same host, sqlite-vec, single-tenant). Remote embedder deployments have softer targets, primarily bounded by network and embedder latency. Production deployments should set their own SLA based on measured baseline.
 
 ## 9. Min vs Max deployment
 
 ### Min (single laptop, zero external deps)
-- SQLite + sqlite-vec v0.1.6
+- SQLite + sqlite-vec v0.1.9
 - Ollama running locally (`ollama pull bge-m3`)
 - Single process: `uv run memory-hall serve`
-- No auth (suitable for local-only use; gateway-deploy if exposing beyond loopback)
+- No auth by default; optional `MH_API_TOKEN` / `MH_ADMIN_TOKEN` shims for private-network deployments.
 
 ### Max (multi-host home AI lab)
-- SQLite (or Postgres v0.2+) on central host
-- Qdrant on dedicated host (for shared vector store)
+- SQLite on central host
+- Optional dedicated HTTP embed service to isolate `bge-m3` from shared Ollama LLM queues
 - Ollama on GPU host (DGX, RTX 3090, etc.) with model permanently loaded (`OLLAMA_KEEP_ALIVE=-1`)
-- memory-gateway on always-on host (Mac mini, Raspberry Pi, etc.) — adds HMAC auth, ACL, staging, proposals
+- memory-gateway on always-on host (Mac mini, Raspberry Pi, etc.) — future HMAC auth, ACL, staging, proposals boundary
 - Multiple agents (Claude on laptop via MCP, Codex CLI from anywhere, ChatGPT bot via webhook, …)
 
 ## 10. Search
@@ -262,16 +263,16 @@ Sweeps entries with `sync_status != 'embedded'` and re-runs embedding + vector u
 ### `POST /v1/admin/audit`
 Reports: total entries per tenant, per-namespace counts, sync_status histogram, content_hash collisions (should be zero).
 
-Admin endpoints require `role: admin` principal (gateway deploy only; standalone has no admin protection — bind to localhost).
+Admin endpoints are public only when auth is disabled. With `MH_API_TOKEN` set, `/v1/admin/*` falls back to that token; with `MH_ADMIN_TOKEN` set, admin endpoints require the separate admin token and reject the regular API token. See ADR 0009.
 
 ## 12. Roadmap
 
 | Version | Scope |
 |---|---|
 | **v0.1** | Engine library, single-tenant runtime, SQLite + Ollama + sqlite-vec, HTTP + CLI, dogfood |
-| **v0.2** | MCP server, qdrant adapter, multi-tenant runtime + admin override, `mh import-mem0` script, docker compose deployment story via memory-gateway |
+| **v0.2** | HTTP / CLI / embedded contract freeze, CJK tokenizer, sqlite-vec 0.1.9, degraded writes + reindex, optional Bearer/admin-token shims |
 | **v1.0** | Public release, docs site, 3–5 example agent integrations, benchmarks |
-| **v2.0** | Optional async enrichment worker (fact extraction), more adapters (postgres, sentence-transformers default option) |
+| **v2.0** | More storage/embedder adapters if real usage justifies them |
 
 ## 13. Validation plan (post v0.1)
 

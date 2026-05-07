@@ -16,7 +16,7 @@ curl -sS http://127.0.0.1:9000/v1/memory/write \
     "agent_id": "codex",
     "namespace": "shared",
     "type": "note",
-    "content": "memory-hall v0.1 quickstart write via curl",
+    "content": "memory-hall quickstart write via curl",
     "summary": "curl example",
     "tags": ["quickstart", "shell"],
     "references": [],

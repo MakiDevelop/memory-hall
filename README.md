@@ -13,7 +13,7 @@
 
 Most AI agent memory tools want to become platforms. memory-hall refuses to.
 
-It's three components (SQLite + sqlite-vec + Ollama), three entry points (HTTP / CLI / Python embedded), and one deliberate philosophy: **the engine only stores and retrieves. Your agent stack decides the memory structure.** No opinionated enrichment, no MCP, no auth, no replica. Just a fast, durable, CJK-aware store that runs on a single Mac mini.
+It's three components (SQLite + sqlite-vec + Ollama), three entry points (HTTP / CLI / Python embedded), and one deliberate philosophy: **the engine only stores and retrieves. Your agent stack decides the memory structure.** No opinionated enrichment, no required MCP path, no mandatory auth, no replica. Just a fast, durable, CJK-aware store that runs on a single Mac mini.
 
 ---
 
@@ -58,7 +58,7 @@ curl -X POST http://localhost:9100/v1/memory/search \
   -d '{"query": "memory-hall", "mode": "hybrid", "limit": 5}'
 ```
 
-That's it. No auth, no account, no API key. Your data lives in `./data/memory-hall.sqlite3`.
+That's it. No auth, no account, no API key. With Docker Compose, your data lives in `./mh-data/memory-hall.sqlite3`.
 
 ---
 
@@ -85,9 +85,9 @@ Why the gap? `unicode61` treats a continuous stretch of Chinese characters as **
 | Language | Python | Python | Rust | Python | Python |
 | Storage | SQLite + sqlite-vec | Qdrant/pgvector | SQLite + FTS5 | SQLite + FTS5 + vec0 | multi-store |
 | CJK first-class | **✅ jieba at storage layer** | ❌ (via embedder) | ✅ (BM25 + jieba) | ✅ (jieba) | ❌ (via embedder) |
-| MCP server | ❌ by choice | — | ❌ | ✅ | — |
+| MCP server | example wrapper only | — | ❌ | ✅ | — |
 | Enrichment / decay | ❌ by choice | ✅ | ✅ 3-layer decay | — | ✅ scheduler |
-| Authentication | ❌ by choice | ✅ | — | — | ✅ |
+| Authentication | optional Bearer shim | ✅ | — | — | ✅ |
 | Deliberate scope ceiling | **✅ engine only** | ❌ growing | — | — | ❌ "OS for memory" |
 | License | Apache 2.0 | mixed | Apache 2.0 | — | Apache 2.0 |
 
@@ -101,8 +101,8 @@ Most READMEs list what a project does. This is the list of what memory-hall **de
 
 | Feature | Why not | When it'd change |
 |---------|---------|------------------|
-| **MCP server** | Adds setup friction; protocol still evolving | v0.3, when use cases crystallize |
-| **Authentication** | Gets in the way of personal/home lab; bad early picks are hard to undo | When someone deploys this behind an exposed endpoint |
+| **MCP as the only path** | Adds setup friction; protocol still evolving | Never. MCP can stay a wrapper; HTTP / CLI / embedded remain first-class. |
+| **Production-grade auth / ACL** | Bad early identity picks are hard to undo | `MH_API_TOKEN` / `MH_ADMIN_TOKEN` are opt-in shims today; HMAC / ACL belongs in `memory-gateway` or a future hardened mode. |
 | **Replica / HA** | SQLite's whole value is single-file simplicity; adding consensus violates that | At v2.0, via Postgres adapter swap |
 | **Enrichment worker** (fact extraction, summarization) | Opinionated memory structure is what makes mem0 not fit my use case; I won't repeat that | Never in this repo. Build it on top. |
 | **Memory decay / topic tree** | Same as above — memory shape is your agent stack's job | Never in this repo. |
@@ -198,7 +198,7 @@ Rationale in [ADR 0006](docs/adr/0006-http-embedder-embed-queue-isolation.md). T
 
 ### Opt-in token auth
 
-Set `MH_API_TOKEN` to require `Authorization: Bearer <token>` on all `/v1/memory/*` endpoints (`/v1/health` stays public). Leave unset for dev. Rationale + when to upgrade to HMAC in [ADR 0007](docs/adr/0007-minimal-token-auth.md).
+Set `MH_API_TOKEN` to require `Authorization: Bearer <token>` on `/v1/memory/*` endpoints (`/v1/health` stays public). Set a different `MH_ADMIN_TOKEN` to require a separate token on `/v1/admin/*`; when it is unset, admin endpoints fall back to `MH_API_TOKEN` for backward compatibility. Leave both unset for local dev. Rationale in [ADR 0007](docs/adr/0007-minimal-token-auth.md) and [ADR 0009](docs/adr/0009-admin-gate.md).
 
 ---
 
@@ -214,8 +214,8 @@ Set `MH_API_TOKEN` to require `Authorization: Bearer <token>` on all `/v1/memory
 **What v0.2 is *not*, yet**
 - Not a distributed database. One writer, one reader.
 - Not production-scale for millions of entries. sqlite-vec is comfortable to ~100k on commodity hardware; beyond that, swap the vector adapter.
-- No MCP server yet (v0.3).
-- No authentication (put it behind your own gateway).
+- No first-party MCP server in the core package; `examples/claude_mcp/` is an integration sketch.
+- No production-grade identity / ACL. Bearer + admin tokens are opt-in deployment shims, not per-agent auth.
 - No multi-tenant validation at scale (schema is multi-tenant from day one per [ADR-0002](docs/adr/0002-multi-tenant-from-day-one.md), but cross-tenant isolation at scale isn't stress-tested).
 - No enrichment. What you write is what gets stored.
 
@@ -226,7 +226,7 @@ Set `MH_API_TOKEN` to require `Authorization: Bearer <token>` on all `/v1/memory
 - **v0.1** (2026-04-18) — engine shipped. Hit@3 hybrid=60% / lexical=60% / semantic=0% on 177-entry CJK corpus. Durability + concurrency verified. See [results-2026-04-18.md](docs/benchmarks/results-2026-04-18.md).
 - **v0.2** (2026-04-19) — jieba CJK tokenizer (pure-CJK queries now lexically hit: BM25 0 → 0.26), latency metrics in benchmark, cursor-stream reindex, `embed_batch` for backlog throughput, Docker sqlite-vec upgraded to 0.1.9 (upstream [#251](https://github.com/asg017/sqlite-vec/issues/251) ARM64 ELF32 bug), build-time `vec0` smoke test. See [results-2026-04-19.md](docs/benchmarks/results-2026-04-19.md).
 - **v0.2.1** (2026-04-20, **current**) — `HttpEmbedder` backend (ADR 0006) for isolating the embed path from shared-Ollama LLM queues; `health_embed_timeout_s` separated from write-path timeout; `docker-compose.yml` default host port corrected to 9100. See [CHANGELOG](CHANGELOG.md).
-- **v0.3** — MCP server, Qdrant adapter, docker compose for self-host, optional auth. (Let the use cases find us first.)
+- **v0.3** — harden the MCP wrapper story, decide whether Qdrant/Postgres adapters are worth the complexity, and narrow the auth boundary after more dogfood.
 - **v1.0** — public release, docs site, example integrations.
 - **v2.0** — Postgres adapter for replica/HA, more embedder/store adapters.
 
@@ -269,7 +269,7 @@ Open an issue (bug reports from real usage are the most valuable — see [Max's 
 
 memory-hall 是給多 AI agent（Claude / Codex / Gemini / 本地 LLM / 人類 / 機器人）共用的本地記憶引擎。用 SQLite + sqlite-vec + Ollama 一台 Mac mini 就能跑，CJK 原生（jieba 預切詞），Apache 2.0。
 
-**故意保持小**——沒有 decay、沒有 topic tree、沒有 MCP、沒有 auth、沒有 enrichment worker。agent memory 最容易 bloat 成「另一個平台」，memory-hall 的賭注是：engine 只管儲存，agent stack 主人決定記憶結構。
+**故意保持小**——沒有 decay、沒有 topic tree、沒有強制 MCP 路徑、沒有強制 auth、沒有 enrichment worker。agent memory 最容易 bloat 成「另一個平台」，memory-hall 的賭注是：engine 只管儲存，agent stack 主人決定記憶結構。
 
 歡迎一起來玩。開 issue、送 PR、回報你踩到的坑。完整論據見 [blog](https://blog.chibakuma.com/memory-hall-cjk-first-mover)。
 
@@ -280,7 +280,7 @@ memory-hall 是給多 AI agent（Claude / Codex / Gemini / 本地 LLM / 人類 /
 
 memory-hall 是给多 AI agent（Claude / Codex / Gemini / 本地 LLM / 人类 / 机器人）共用的本地记忆引擎。用 SQLite + sqlite-vec + Ollama 一台 Mac mini 就能跑，CJK 原生（jieba 预切词），Apache 2.0。
 
-**故意保持小**——没有 decay、没有 topic tree、没有 MCP、没有 auth、没有 enrichment worker。memory-hall 的赌注是：engine 只管存储，agent stack 主人决定记忆结构。
+**故意保持小**——没有 decay、没有 topic tree、没有强制 MCP 路径、没有强制 auth、没有 enrichment worker。memory-hall 的赌注是：engine 只管存储，agent stack 主人决定记忆结构。
 
 </details>
 
@@ -289,7 +289,7 @@ memory-hall 是给多 AI agent（Claude / Codex / Gemini / 本地 LLM / 人类 /
 
 memory-hall は、複数の AI エージェント（Claude / Codex / Gemini / ローカル LLM / 人間 / ボット）が共有できるセルフホスト型メモリエンジンです。SQLite + sqlite-vec + Ollama で Mac mini 一台で動きます。CJK ネイティブ（jieba 分かち書き）、Apache 2.0。
 
-**意図的に小さく保つ**——decay なし、topic tree なし、MCP なし、auth なし、enrichment worker なし。memory-hall の賭けは：エンジンは保存と検索だけ、メモリ構造の決定はエージェントスタックの持ち主に任せる。
+**意図的に小さく保つ**——decay なし、topic tree なし、必須 MCP パスなし、必須 auth なし、enrichment worker なし。memory-hall の賭けは：エンジンは保存と検索だけ、メモリ構造の決定はエージェントスタックの持ち主に任せる。
 
 </details>
 
@@ -298,7 +298,7 @@ memory-hall は、複数の AI エージェント（Claude / Codex / Gemini / �
 
 memory-hall is a self-hostable memory engine for multiple AI agents (Claude, Codex, Gemini, local LLMs, humans, bots). SQLite + sqlite-vec + Ollama runs on a single Mac mini. CJK-native via jieba tokenization. Apache 2.0.
 
-**Deliberately small** — no decay, no topic tree, no MCP, no auth, no enrichment worker. memory-hall's bet: the engine only stores and retrieves; memory structure is your agent stack's decision.
+**Deliberately small** — no decay, no topic tree, no required MCP path, no mandatory auth, no enrichment worker. memory-hall's bet: the engine only stores and retrieves; memory structure is your agent stack's decision.
 
 </details>
 
@@ -307,7 +307,7 @@ memory-hall is a self-hostable memory engine for multiple AI agents (Claude, Cod
 
 memory-hall ist eine selbst-hostbare Memory-Engine für mehrere KI-Agenten (Claude, Codex, Gemini, lokale LLMs, Menschen, Bots). SQLite + sqlite-vec + Ollama — läuft auf einem Mac mini. CJK-nativ via jieba-Tokenisierung. Apache 2.0.
 
-**Absichtlich klein gehalten** — kein Decay, kein Topic Tree, kein MCP, keine Auth, kein Enrichment-Worker. Die Engine speichert und ruft ab; die Memory-Struktur entscheidet dein Agent-Stack.
+**Absichtlich klein gehalten** — kein Decay, kein Topic Tree, kein verpflichtender MCP-Pfad, keine verpflichtende Auth, kein Enrichment-Worker. Die Engine speichert und ruft ab; die Memory-Struktur entscheidet dein Agent-Stack.
 
 </details>
 
@@ -316,7 +316,7 @@ memory-hall ist eine selbst-hostbare Memory-Engine für mehrere KI-Agenten (Clau
 
 memory-hall est un moteur mémoire auto-hébergeable pour plusieurs agents IA (Claude, Codex, Gemini, LLM locaux, humains, bots). SQLite + sqlite-vec + Ollama tournent sur un seul Mac mini. CJK natif via tokenisation jieba. Apache 2.0.
 
-**Volontairement petit** — pas de decay, pas de topic tree, pas de MCP, pas d'auth, pas de worker d'enrichissement. Le moteur stocke et récupère ; la structure de la mémoire, c'est à votre agent stack de la décider.
+**Volontairement petit** — pas de decay, pas de topic tree, pas de chemin MCP obligatoire, pas d'auth obligatoire, pas de worker d'enrichissement. Le moteur stocke et récupère ; la structure de la mémoire, c'est à votre agent stack de la décider.
 
 </details>
 
@@ -325,7 +325,7 @@ memory-hall est un moteur mémoire auto-hébergeable pour plusieurs agents IA (C
 
 memory-hall è un motore di memoria self-hosted per più agenti AI (Claude, Codex, Gemini, LLM locali, umani, bot). SQLite + sqlite-vec + Ollama girano su un singolo Mac mini. CJK nativo tramite tokenizzazione jieba. Apache 2.0.
 
-**Volutamente piccolo** — niente decay, niente topic tree, niente MCP, niente auth, niente enrichment worker. Il motore salva e recupera; la struttura della memoria la decide il tuo agent stack.
+**Volutamente piccolo** — niente decay, niente topic tree, nessun percorso MCP obbligatorio, nessuna auth obbligatoria, niente enrichment worker. Il motore salva e recupera; la struttura della memoria la decide il tuo agent stack.
 
 </details>
 
@@ -334,6 +334,6 @@ memory-hall è un motore di memoria self-hosted per più agenti AI (Claude, Code
 
 memory-hall 은 여러 AI 에이전트(Claude / Codex / Gemini / 로컬 LLM / 사람 / 봇)가 함께 쓰는 셀프 호스트형 메모리 엔진입니다. SQLite + sqlite-vec + Ollama 로 Mac mini 한 대에서 돌아갑니다. CJK 네이티브(jieba 토큰화), Apache 2.0.
 
-**의도적으로 작게 유지** — decay 없음, topic tree 없음, MCP 없음, auth 없음, enrichment worker 없음. memory-hall의 베팅: 엔진은 저장과 검색만, 메모리 구조 결정은 당신의 에이전트 스택이.
+**의도적으로 작게 유지** — decay 없음, topic tree 없음, 필수 MCP 경로 없음, 필수 auth 없음, enrichment worker 없음. memory-hall의 베팅: 엔진은 저장과 검색만, 메모리 구조 결정은 당신의 에이전트 스택이.
 
 </details>
