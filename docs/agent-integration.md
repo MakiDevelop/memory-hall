@@ -143,6 +143,37 @@ Gotchas:
 | `command not found: mh` | Package not installed in this shell's PATH | `uv sync` inside the repo, or use `uv run mh …` |
 | `uv run mh` errors on `~/.cache/uv` permission | Sandbox cache dir not writable | `export UV_CACHE_DIR=/tmp/uv-cache` |
 | Writes succeed but search returns nothing | Path A and Path B pointing at different DB files | Align `MH_DB_PATH` in both, or always go through HTTP |
+| Handoff loads an old but relevant session | `/v1/memory/search` ranks by relevance, not recency | Use `GET /v1/memory?namespace=...&type=episode&limit=...` or `uv run mh list --namespace ... --type episode` for latest handoff |
+
+## Handoff retrieval: latest vs search
+
+For session handoff, "latest" and "most relevant" are different operations:
+
+- Use **list** for normal handoff/load/status flows. It returns entries in `created_at DESC` order.
+- Use **search** only when the user asks for a keyword or historical lookup.
+
+Latest handoff via HTTP:
+
+```bash
+export MH_API_TOKEN="$(cat ~/.config/memhall/token)"
+
+curl -sS "http://100.122.171.74:9100/v1/memory?namespace=project:memory-hall&type=episode&limit=5" \
+  -H "Authorization: Bearer ${MH_API_TOKEN}"
+```
+
+Latest handoff via CLI:
+
+```bash
+export MH_API_TOKEN="$(cat ~/.config/memhall/token)"
+
+uv run mh list \
+  --base-url http://100.122.171.74:9100 \
+  --namespace project:memory-hall \
+  --type episode \
+  --limit 5
+```
+
+If you do use search for handoff-related keywords, prefer `--mode lexical` when the embedder is degraded. Hybrid search can still return lexical results with `"degraded": true`, but the timeout adds noise to operational debugging.
 
 ---
 

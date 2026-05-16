@@ -51,3 +51,15 @@ uv run mh write "DEC-018 落地完成" \
 ```bash
 uv run mh search "DEC-018"
 ```
+
+## Load Latest Session Handoff
+
+Use `list` for "latest" handoff/status flows. `search` is relevance-ranked and can return an older but more keyword-relevant session.
+
+```bash
+uv run mh list \
+  --base-url http://100.122.171.74:9100 \
+  --namespace project:memory-hall \
+  --type episode \
+  --limit 5
+```
