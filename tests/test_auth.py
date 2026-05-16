@@ -95,14 +95,13 @@ async def test_auth_enabled_wrong_scheme_returns_401(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_auth_enabled_health_endpoint_stays_public(tmp_path: Path) -> None:
+async def test_auth_enabled_health_endpoints_stay_public(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     settings.api_token = "secret-token-abc"
     app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
     async with client_for_app(app) as client:
         response = await client.get("/v1/health")
-    # Health returns 200 (or 503 degraded). Point is: not 401.
-    assert response.status_code != 401
+        assert response.status_code != 401
 
 
 @pytest.mark.asyncio
@@ -116,3 +115,126 @@ async def test_auth_enabled_search_requires_token(tmp_path: Path) -> None:
             json={"query": "anything", "mode": "hybrid", "limit": 5},
         )
     assert response.status_code == 401
+
+
+# ---------- ADR 0009: admin gate (two-tier bearer) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_admin_token_unset_admin_falls_back_to_api_token(tmp_path: Path) -> None:
+    """Backward compat: when MH_ADMIN_TOKEN is unset, /v1/admin/* uses api_token."""
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = None
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/admin/audit",
+            headers={"Authorization": "Bearer shared-token"},
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_token_set_correct_token_allows_admin(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = "admin-only-token"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/admin/audit",
+            headers={"Authorization": "Bearer admin-only-token"},
+        )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_token_set_api_token_rejected_on_admin(tmp_path: Path) -> None:
+    """When admin_token is set, the regular api_token must NOT grant admin access."""
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = "admin-only-token"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/admin/audit",
+            headers={"Authorization": "Bearer shared-token"},
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid admin token"
+
+
+@pytest.mark.asyncio
+async def test_admin_token_set_missing_header_returns_401(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = "admin-only-token"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post("/v1/admin/audit")
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing bearer token"
+
+
+@pytest.mark.asyncio
+async def test_admin_token_does_not_grant_general_endpoints(tmp_path: Path) -> None:
+    """admin_token is admin-only; it must not work as a general api_token on
+    non-admin paths (least privilege both directions)."""
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = "admin-only-token"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/memory/write",
+            json=_write_payload(),
+            headers={"Authorization": "Bearer admin-only-token"},
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_admin_token_set_health_endpoints_stay_public(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = "admin-only-token"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.get("/v1/health")
+        assert response.status_code != 401
+
+
+# ---------- ADR 0009: config-level invariants (fail-fast) ----------------
+
+
+def test_settings_admin_token_without_api_token_fails(tmp_path: Path) -> None:
+    """Codex review finding #1 [HIGH]: admin_token set + api_token unset would
+    fail-open on non-admin paths. Settings load must reject this combo."""
+    from pydantic import ValidationError
+
+    from memory_hall.config import Settings
+
+    with pytest.raises(ValidationError, match="admin_token requires api_token"):
+        Settings(
+            database_path=tmp_path / "db.sqlite3",
+            vector_database_path=tmp_path / "vec.sqlite3",
+            admin_token="admin-only-token",
+            api_token=None,
+        )
+
+
+def test_settings_admin_token_equal_to_api_token_fails(tmp_path: Path) -> None:
+    """Codex review finding #2 [MEDIUM]: equal tokens silently nullify the
+    two-tier separation. Settings load must reject this combo."""
+    from pydantic import ValidationError
+
+    from memory_hall.config import Settings
+
+    with pytest.raises(ValidationError, match="admin_token must differ from api_token"):
+        Settings(
+            database_path=tmp_path / "db.sqlite3",
+            vector_database_path=tmp_path / "vec.sqlite3",
+            api_token="same-token",
+            admin_token="same-token",
+        )

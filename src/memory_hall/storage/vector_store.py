@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Protocol
 
@@ -29,6 +30,8 @@ class VectorStore(Protocol):
 
     def delete(self, tenant_id: str, entry_id: str) -> None: ...
 
+    def checkpoint_wal(self, *, mode: str = "TRUNCATE") -> tuple[int, int, int]: ...
+
 
 class SqliteVecStore:
     """Vector store backed by sqlite-vec vec0 virtual table when available.
@@ -44,104 +47,126 @@ class SqliteVecStore:
         self.dim = dim
         self._connection: sqlite3.Connection | None = None
         self._vec0_enabled: bool = False
+        self._connection_lock = threading.RLock()
 
     def open(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path, check_same_thread=False)
-        connection.row_factory = sqlite3.Row
-        self._apply_pragmas(connection)
-        self._vec0_enabled = self._try_load_vec0(connection)
-        if self._vec0_enabled:
-            self._init_vec0_table(connection)
-        else:
-            self._init_fallback_table(connection)
-        self._connection = connection
+        with self._connection_lock:
+            connection = sqlite3.connect(self.database_path, check_same_thread=False)
+            connection.row_factory = sqlite3.Row
+            self._apply_pragmas(connection)
+            self._vec0_enabled = self._try_load_vec0(connection)
+            if self._vec0_enabled:
+                self._init_vec0_table(connection)
+            else:
+                self._init_fallback_table(connection)
+            self._connection = connection
 
     def close(self) -> None:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
+        with self._connection_lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
 
     def healthcheck(self) -> None:
-        connection = self._require_connection()
-        connection.execute("SELECT 1").fetchone()
+        with self._connection_lock:
+            connection = self._require_connection()
+            connection.execute("SELECT 1").fetchone()
 
     def upsert(self, tenant_id: str, entry_id: str, vec: list[float]) -> None:
         self._validate_vector(vec)
-        connection = self._require_connection()
-        if self._vec0_enabled:
-            import sqlite_vec  # type: ignore[import-not-found]
+        with self._connection_lock:
+            connection = self._require_connection()
+            if self._vec0_enabled:
+                import sqlite_vec  # type: ignore[import-not-found]
 
-            blob = sqlite_vec.serialize_float32(vec)
+                blob = sqlite_vec.serialize_float32(vec)
+                connection.execute(
+                    "DELETE FROM vectors WHERE tenant_id = ? AND entry_id = ?",
+                    (tenant_id, entry_id),
+                )
+                connection.execute(
+                    "INSERT INTO vectors(tenant_id, entry_id, embedding) VALUES (?, ?, ?)",
+                    (tenant_id, entry_id, blob),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO vectors (tenant_id, entry_id, vector_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(tenant_id, entry_id)
+                    DO UPDATE SET vector_json = excluded.vector_json
+                    """,
+                    (tenant_id, entry_id, json.dumps(vec)),
+                )
+            connection.commit()
+
+    def search(self, tenant_id: str, query_vec: list[float], k: int) -> list[SearchCandidate]:
+        self._validate_vector(query_vec)
+        with self._connection_lock:
+            connection = self._require_connection()
+            if self._vec0_enabled:
+                import sqlite_vec  # type: ignore[import-not-found]
+
+                rows = connection.execute(
+                    """
+                    SELECT entry_id, distance
+                    FROM vectors
+                    WHERE embedding MATCH ? AND tenant_id = ? AND k = ?
+                    ORDER BY distance
+                    """,
+                    (sqlite_vec.serialize_float32(query_vec), tenant_id, k),
+                ).fetchall()
+                return [
+                    SearchCandidate(
+                        entry_id=row["entry_id"],
+                        score=self._cosine_distance_to_similarity(float(row["distance"])),
+                    )
+                    for row in rows
+                ]
+
+            rows = connection.execute(
+                "SELECT entry_id, vector_json FROM vectors WHERE tenant_id = ?",
+                (tenant_id,),
+            ).fetchall()
+            scored: list[tuple[str, float]] = [
+                (
+                    row["entry_id"],
+                    self._cosine_similarity(query_vec, json.loads(row["vector_json"])),
+                )
+                for row in rows
+            ]
+            scored.sort(key=lambda item: item[1], reverse=True)
+            return [
+                SearchCandidate(entry_id=entry_id, score=score)
+                for entry_id, score in scored[:k]
+            ]
+
+    def contains(self, tenant_id: str, entry_id: str) -> bool:
+        with self._connection_lock:
+            connection = self._require_connection()
+            row = connection.execute(
+                "SELECT 1 FROM vectors WHERE tenant_id = ? AND entry_id = ?",
+                (tenant_id, entry_id),
+            ).fetchone()
+            return row is not None
+
+    def delete(self, tenant_id: str, entry_id: str) -> None:
+        with self._connection_lock:
+            connection = self._require_connection()
             connection.execute(
                 "DELETE FROM vectors WHERE tenant_id = ? AND entry_id = ?",
                 (tenant_id, entry_id),
             )
-            connection.execute(
-                "INSERT INTO vectors(tenant_id, entry_id, embedding) VALUES (?, ?, ?)",
-                (tenant_id, entry_id, blob),
-            )
-        else:
-            connection.execute(
-                """
-                INSERT INTO vectors (tenant_id, entry_id, vector_json)
-                VALUES (?, ?, ?)
-                ON CONFLICT(tenant_id, entry_id)
-                DO UPDATE SET vector_json = excluded.vector_json
-                """,
-                (tenant_id, entry_id, json.dumps(vec)),
-            )
-        connection.commit()
+            connection.commit()
 
-    def search(self, tenant_id: str, query_vec: list[float], k: int) -> list[SearchCandidate]:
-        self._validate_vector(query_vec)
-        connection = self._require_connection()
-        if self._vec0_enabled:
-            import sqlite_vec  # type: ignore[import-not-found]
-
-            rows = connection.execute(
-                """
-                SELECT entry_id, distance
-                FROM vectors
-                WHERE embedding MATCH ? AND tenant_id = ? AND k = ?
-                ORDER BY distance
-                """,
-                (sqlite_vec.serialize_float32(query_vec), tenant_id, k),
-            ).fetchall()
-            return [
-                SearchCandidate(
-                    entry_id=row["entry_id"],
-                    score=self._cosine_distance_to_similarity(float(row["distance"])),
-                )
-                for row in rows
-            ]
-
-        rows = connection.execute(
-            "SELECT entry_id, vector_json FROM vectors WHERE tenant_id = ?",
-            (tenant_id,),
-        ).fetchall()
-        scored: list[tuple[str, float]] = [
-            (row["entry_id"], self._cosine_similarity(query_vec, json.loads(row["vector_json"])))
-            for row in rows
-        ]
-        scored.sort(key=lambda item: item[1], reverse=True)
-        return [SearchCandidate(entry_id=entry_id, score=score) for entry_id, score in scored[:k]]
-
-    def contains(self, tenant_id: str, entry_id: str) -> bool:
-        connection = self._require_connection()
-        row = connection.execute(
-            "SELECT 1 FROM vectors WHERE tenant_id = ? AND entry_id = ?",
-            (tenant_id, entry_id),
-        ).fetchone()
-        return row is not None
-
-    def delete(self, tenant_id: str, entry_id: str) -> None:
-        connection = self._require_connection()
-        connection.execute(
-            "DELETE FROM vectors WHERE tenant_id = ? AND entry_id = ?",
-            (tenant_id, entry_id),
-        )
-        connection.commit()
+    def checkpoint_wal(self, *, mode: str = "TRUNCATE") -> tuple[int, int, int]:
+        with self._connection_lock:
+            connection = self._require_connection()
+            busy, log_frames, checkpointed = self._checkpoint(connection, "PASSIVE")
+            if busy > 0:
+                self._checkpoint(connection, "RESTART")
+            return self._checkpoint(connection, mode)
 
     def _try_load_vec0(self, connection: sqlite3.Connection) -> bool:
         if not hasattr(connection, "enable_load_extension"):
@@ -203,6 +228,13 @@ class SqliteVecStore:
     def _validate_vector(self, vec: list[float]) -> None:
         if len(vec) != self.dim:
             raise ValueError(f"expected vector length {self.dim}, got {len(vec)}")
+
+    @staticmethod
+    def _checkpoint(connection: sqlite3.Connection, mode: str) -> tuple[int, int, int]:
+        row = connection.execute(f"PRAGMA wal_checkpoint({mode});").fetchone()
+        if row is None:
+            raise RuntimeError(f"wal_checkpoint({mode}) returned no result")
+        return (int(row[0]), int(row[1]), int(row[2]))
 
     @staticmethod
     def _apply_pragmas(connection: sqlite3.Connection) -> None:

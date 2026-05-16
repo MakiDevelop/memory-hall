@@ -1,7 +1,7 @@
 # memory-hall — minimal multi-host compose
 #
-# Default config: memory-hall + qdrant + (optional) ollama
-# For single-laptop minimum, see README quickstart (no docker needed).
+# Default config: memory-hall only. Qdrant / Ollama are optional sidecars.
+# For single-laptop minimum, see README quickstart.
 
 services:
   memory-hall:
@@ -28,11 +28,10 @@ services:
       # bind mount is transparent and compose cannot silently swap it.
       # Override MEMHALL_DATA_DIR for production (e.g. ~/data/memory-hall).
       - ${MEMHALL_DATA_DIR:-./mh-data}:/data
-    depends_on:
-      - qdrant
     restart: unless-stopped
 
   qdrant:
+    profiles: ["qdrant"]
     image: qdrant/qdrant:v1.12.4
     ports:
       - "6333:6333"

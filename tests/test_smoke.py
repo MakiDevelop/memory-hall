@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
 
 import pytest
 
+from memory_hall.models import Entry, build_content_hash, utc_now
 from memory_hall.server.app import create_app
+from memory_hall.storage.vector_store import SqliteVecStore
 from tests.conftest import DeterministicEmbedder, TimeoutEmbedder, build_settings, client_for_app
 
 
@@ -28,6 +31,38 @@ class SlowEmbedder(DeterministicEmbedder):
     def embed(self, text: str) -> list[float]:
         time.sleep(self.sleep_s)
         return super().embed(text)
+
+
+def _entry(index: int, tenant_id: str) -> Entry:
+    content = f"wal checkpoint entry {index}"
+    return Entry(
+        entry_id=f"01KPWALCHECKPOINT{index:08d}",
+        tenant_id=tenant_id,
+        agent_id="pytest",
+        namespace="shared",
+        type="note",
+        content=content,
+        content_hash=build_content_hash(content),
+        summary=None,
+        tags=[],
+        references=[],
+        metadata={},
+        sync_status="embedded",
+        last_embedded_at=None,
+        last_embed_error=None,
+        last_embed_attempted_at=None,
+        embed_attempt_count=0,
+        created_at=utc_now(),
+        created_by_principal="pytest",
+    )
+
+
+def _wal_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}-wal")
+
+
+def _wal_size(path: Path) -> int:
+    return path.stat().st_size if path.exists() else 0
 
 
 @pytest.mark.asyncio
@@ -111,6 +146,46 @@ async def test_health_logs_subcheck_error_and_exposes_last_error(app_factory, ca
         "health sub-check failed component=embedder" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_wal_checkpoint_truncates_main_and_vector_wal(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.wal_checkpoint_interval_s = 300.0
+    app = create_app(
+        settings=settings,
+        embedder=DeterministicEmbedder(dim=settings.vector_dim),
+    )
+
+    async with app.router.lifespan_context(app):
+        runtime = app.state.runtime
+        vector_store = runtime.vector_store
+        assert isinstance(vector_store, SqliteVecStore)
+
+        for index in range(100):
+            entry = _entry(index, settings.default_tenant_id)
+            await runtime.storage.insert_entry(entry)
+            await asyncio.to_thread(
+                vector_store.upsert,
+                entry.tenant_id,
+                entry.entry_id,
+                [float(index + 1)] * settings.vector_dim,
+            )
+
+        main_wal_path = _wal_path(settings.database_path)
+        vector_wal_path = _wal_path(settings.vector_database_path)
+
+        assert main_wal_path.exists()
+        assert vector_wal_path.exists()
+        main_wal_before = _wal_size(main_wal_path)
+        vector_wal_before = _wal_size(vector_wal_path)
+        assert main_wal_before > 32 * 1024
+        assert vector_wal_before > 32 * 1024
+
+        await runtime._checkpoint_wal_databases()
+
+        assert _wal_size(main_wal_path) <= 32 * 1024
+        assert _wal_size(vector_wal_path) <= 32 * 1024
 
 
 @pytest.mark.asyncio

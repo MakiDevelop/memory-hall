@@ -29,7 +29,17 @@ def _settings() -> Settings:
 
 
 def _client(base_url: str, timeout_s: float) -> httpx.Client:
-    return httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout_s)
+    settings = _settings()
+    headers = (
+        {"Authorization": f"Bearer {settings.api_token}"}
+        if settings.api_token
+        else None
+    )
+    return httpx.Client(
+        base_url=base_url.rstrip("/"),
+        timeout=timeout_s,
+        headers=headers,
+    )
 
 
 def _parse_metadata(value: str | None) -> dict[str, Any]:
@@ -39,6 +49,29 @@ def _parse_metadata(value: str | None) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise typer.BadParameter("metadata must be a JSON object")
     return parsed
+
+
+def _query_params(**values: Any) -> list[tuple[str, Any]]:
+    params: list[tuple[str, Any]] = []
+    for key, value in values.items():
+        if value is None:
+            continue
+        if isinstance(value, list):
+            params.extend((key, item) for item in value)
+        else:
+            params.append((key, value))
+    return params
+
+
+def _preview(value: str, max_chars: int = 160) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[: max_chars - 1]}…"
+
+
+def _write_timeout_s(settings: Settings) -> float:
+    return max(settings.request_timeout_s, settings.embed_timeout_s + 2.0)
 
 
 @app.command()
@@ -84,7 +117,7 @@ def write(
         "references": reference or [],
         "metadata": _parse_metadata(metadata),
     }
-    with _client(target, settings.request_timeout_s) as client:
+    with _client(target, _write_timeout_s(settings)) as client:
         response = client.post("/v1/memory/write", json=payload)
         response.raise_for_status()
     console.print(JSON(response.text))
@@ -144,6 +177,48 @@ def get(
     console.print(JSON(response.text))
 
 
+@app.command("list")
+def list_entries(
+    limit: int = typer.Option(default=20, min=1, max=1000),
+    namespace: list[str] | None = typer.Option(default=None),
+    agent_id: str | None = typer.Option(default=None),
+    type: list[str] | None = typer.Option(default=None),
+    tags: list[str] | None = typer.Option(default=None),
+    base_url: str | None = typer.Option(default=None),
+) -> None:
+    settings = _settings()
+    target = base_url or settings.api_base_url
+    with _client(target, settings.request_timeout_s) as client:
+        response = client.get(
+            "/v1/memory",
+            params=_query_params(
+                limit=limit,
+                namespace=namespace,
+                agent_id=agent_id,
+                type=type,
+                tags=tags,
+            ),
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    table = Table(title="memory-hall entries")
+    table.add_column("created_at")
+    table.add_column("entry_id")
+    table.add_column("namespace")
+    table.add_column("type")
+    table.add_column("content")
+    for item in data["entries"]:
+        table.add_row(
+            item["created_at"],
+            item["entry_id"],
+            item["namespace"],
+            item["type"],
+            _preview(item["content"]),
+        )
+    console.print(table)
+
+
 @app.command()
 def tail(
     limit: int = typer.Option(default=20, min=1, max=1000),
@@ -160,12 +235,12 @@ def tail(
         while True:
             response = client.get(
                 "/v1/memory",
-                params={
-                    "limit": limit,
-                    "namespace": namespace,
-                    "agent_id": agent_id,
-                    "type": type,
-                },
+                params=_query_params(
+                    limit=limit,
+                    namespace=namespace,
+                    agent_id=agent_id,
+                    type=type,
+                ),
             )
             response.raise_for_status()
             data = response.json()

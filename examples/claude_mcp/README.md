@@ -1,9 +1,10 @@
 # Claude MCP
 
-The MCP wrapper is not part of v0.1.
+The MCP wrapper is an integration sketch, not a privileged core path.
 
-Planned v0.2 scope:
+Current intent:
 
 - wrap the HTTP API with MCP tools
 - keep `memory-hall` as the engine library
-- leave auth and multi-tenant override to `memory-gateway`
+- use the same `MH_API_TOKEN` / `MH_ADMIN_TOKEN` HTTP auth story as other callers
+- leave production-grade identity, ACL, and multi-tenant policy to `memory-gateway` or a future hardened mode
