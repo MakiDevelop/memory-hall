@@ -144,6 +144,7 @@ Gotchas:
 | `uv run mh` errors on `~/.cache/uv` permission | Sandbox cache dir not writable | `export UV_CACHE_DIR=/tmp/uv-cache` |
 | Writes succeed but search returns nothing | Path A and Path B pointing at different DB files | Align `MH_DB_PATH` in both, or always go through HTTP |
 | Handoff loads an old but relevant session | `/v1/memory/search` ranks by relevance, not recency | Use `GET /v1/memory?namespace=...&type=episode&limit=...` or `uv run mh list --namespace ... --type episode` for latest handoff |
+| `mh write` times out around 5 seconds | Client timeout shorter than server embed timeout | Upgrade to a version with write timeout `max(MH_REQUEST_TIMEOUT_S, MH_EMBED_TIMEOUT_S + 2)` or set a larger request timeout |
 
 ## Handoff retrieval: latest vs search
 

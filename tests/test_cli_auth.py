@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from memory_hall.cli.main import _client, _preview, _query_params
+from memory_hall.cli.main import _client, _preview, _query_params, _write_timeout_s
+from memory_hall.config import Settings
 
 
 def test_client_attaches_bearer_header_when_api_token_set(monkeypatch) -> None:
@@ -46,3 +47,9 @@ def test_preview_compacts_and_truncates_long_content() -> None:
 
     assert preview == "first line second line xxxxxxxxxxxxxxxx…"
     assert "\n" not in preview
+
+
+def test_write_timeout_covers_embed_timeout() -> None:
+    settings = Settings(request_timeout_s=5.0, embed_timeout_s=8.0)
+
+    assert _write_timeout_s(settings) == 10.0

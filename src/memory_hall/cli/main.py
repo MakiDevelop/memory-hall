@@ -70,6 +70,10 @@ def _preview(value: str, max_chars: int = 160) -> str:
     return f"{compact[: max_chars - 1]}…"
 
 
+def _write_timeout_s(settings: Settings) -> float:
+    return max(settings.request_timeout_s, settings.embed_timeout_s + 2.0)
+
+
 @app.command()
 def serve(
     host: str | None = typer.Option(default=None),
@@ -113,7 +117,7 @@ def write(
         "references": reference or [],
         "metadata": _parse_metadata(metadata),
     }
-    with _client(target, settings.request_timeout_s) as client:
+    with _client(target, _write_timeout_s(settings)) as client:
         response = client.post("/v1/memory/write", json=payload)
         response.raise_for_status()
     console.print(JSON(response.text))
