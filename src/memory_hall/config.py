@@ -30,11 +30,15 @@ class Settings(BaseSettings):
     vector_dim: int = 1024
     default_tenant_id: str = "default"
     api_token: str | None = None
+    admin_token: str | None = None
     list_default_limit: int = 50
     search_default_limit: int = 20
     search_candidate_multiplier: int = 5
+    hybrid_mode: Literal["weighted_linear", "rrf"] = "rrf"
+    hybrid_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
     request_timeout_s: float = 5.0
     reindex_batch_size: int = 500
+    wal_checkpoint_interval_s: float = 300.0
     max_content_bytes: int = 64 * 1024
 
     @model_validator(mode="before")
@@ -56,6 +60,14 @@ class Settings(BaseSettings):
     def _set_default_embed_dim(self) -> Settings:
         if self.embed_dim is None:
             self.embed_dim = self.vector_dim
+        return self
+
+    @model_validator(mode="after")
+    def _validate_auth_tokens(self) -> Settings:
+        if self.admin_token and not self.api_token:
+            raise ValueError("admin_token requires api_token (would fail-open on non-admin paths)")
+        if self.admin_token and self.api_token and self.admin_token == self.api_token:
+            raise ValueError("admin_token must differ from api_token")
         return self
 
     def prepare_paths(self) -> None:

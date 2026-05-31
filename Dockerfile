@@ -82,7 +82,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Inject upgraded SQLite to runtime stage too
 COPY --from=sqlite-builder /opt/sqlite /opt/sqlite
-RUN echo "/opt/sqlite/lib" > /etc/ld.so.conf.d/sqlite-upgrade.conf && ldconfig
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
@@ -90,6 +89,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --system --create-home --shell /usr/sbin/nologin memhall \
     && mkdir -p /data \
     && chown memhall:memhall /data
+
+# Force system libsqlite3.so.0 to our upgraded build so subprocesses that do not
+# inherit LD_LIBRARY_PATH still resolve SQLite 3.53.0.
+# IMPORTANT: must run AFTER apt-get install (dpkg post-install can reset symlinks).
+RUN echo "/opt/sqlite/lib" > /etc/ld.so.conf.d/sqlite-upgrade.conf \
+    && ldconfig \
+    && case "$(uname -m)" in \
+         x86_64)  TRIPLET=x86_64-linux-gnu ;; \
+         aarch64) TRIPLET=aarch64-linux-gnu ;; \
+         *)       TRIPLET="$(uname -m)-linux-gnu" ;; \
+       esac \
+    && ln -sf /opt/sqlite/lib/libsqlite3.so.3.53.0 "/lib/${TRIPLET}/libsqlite3.so.0" \
+    && { ln -sf /opt/sqlite/lib/libsqlite3.so.3.53.0 "/usr/lib/${TRIPLET}/libsqlite3.so.0" 2>/dev/null || true; }
 
 WORKDIR /app
 

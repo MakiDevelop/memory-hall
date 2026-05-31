@@ -7,7 +7,7 @@ from tests.conftest import TimeoutEmbedder, client_for_app
 
 @pytest.mark.asyncio
 async def test_hybrid_search_marks_timeout_degradation(app_factory) -> None:
-    app = app_factory()
+    app = app_factory(hybrid_mode="weighted_linear")
     async with client_for_app(app) as client:
         write_response = await client.post(
             "/v1/memory/write",
@@ -40,3 +40,8 @@ async def test_hybrid_search_marks_timeout_degradation(app_factory) -> None:
     assert payload["degraded"] is True
     assert payload["results"][0]["entry"]["content"] == "hybrid timeout fallback note"
     assert payload["results"][0]["score_breakdown"]["semantic_status"] == "timeout"
+    assert payload["results"][0]["score_breakdown"]["hybrid_mode"] == "weighted_linear"
+    assert payload["results"][0]["score_breakdown"]["alpha"] == pytest.approx(1.0)
+    assert payload["results"][0]["score"] == pytest.approx(
+        payload["results"][0]["score_breakdown"]["bm25"]
+    )
