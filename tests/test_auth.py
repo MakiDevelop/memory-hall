@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from memory_hall.server.app import create_app
+from memory_hall.server.app import ProductionAuthError, create_app
 from tests.conftest import DeterministicEmbedder, build_settings, client_for_app
 
 
@@ -15,6 +15,58 @@ def _write_payload() -> dict[str, object]:
         "type": "note",
         "content": "auth-test",
     }
+
+
+def test_production_auth_guard_rejects_non_loopback_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MH_ALLOW_INSECURE", raising=False)
+    settings = build_settings(tmp_path)
+    settings.host = "0.0.0.0"  # noqa: S104 - intentional unsafe bind test input.
+    settings.api_token = None
+
+    with pytest.raises(
+        ProductionAuthError,
+        match=r"Refusing to start: binding to 0\.0\.0\.0 without MH_API_TOKEN",
+    ):
+        create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+
+
+def test_production_auth_guard_allows_non_loopback_with_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MH_ALLOW_INSECURE", raising=False)
+    settings = build_settings(tmp_path)
+    settings.host = "0.0.0.0"  # noqa: S104 - intentional unsafe bind test input.
+    settings.api_token = "secret-token-abc"
+
+    create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+
+
+def test_production_auth_guard_allows_explicit_insecure_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MH_ALLOW_INSECURE", "1")
+    settings = build_settings(tmp_path)
+    settings.host = "0.0.0.0"  # noqa: S104 - intentional unsafe bind test input.
+    settings.api_token = None
+
+    create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+
+
+def test_production_auth_guard_allows_localhost_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MH_ALLOW_INSECURE", raising=False)
+    settings = build_settings(tmp_path)
+    settings.host = "localhost"
+    settings.api_token = None
+
+    create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
 
 
 @pytest.mark.asyncio
