@@ -95,8 +95,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # IMPORTANT: must run AFTER apt-get install (dpkg post-install can reset symlinks).
 RUN echo "/opt/sqlite/lib" > /etc/ld.so.conf.d/sqlite-upgrade.conf \
     && ldconfig \
-    && ln -sf /opt/sqlite/lib/libsqlite3.so.3.53.0 /lib/aarch64-linux-gnu/libsqlite3.so.0 \
-    && { ln -sf /opt/sqlite/lib/libsqlite3.so.3.53.0 /usr/lib/aarch64-linux-gnu/libsqlite3.so.0 2>/dev/null || true; }
+    && case "$(uname -m)" in \
+         x86_64)  TRIPLET=x86_64-linux-gnu ;; \
+         aarch64) TRIPLET=aarch64-linux-gnu ;; \
+         *)       TRIPLET="$(uname -m)-linux-gnu" ;; \
+       esac \
+    && ln -sf /opt/sqlite/lib/libsqlite3.so.3.53.0 "/lib/${TRIPLET}/libsqlite3.so.0" \
+    && { ln -sf /opt/sqlite/lib/libsqlite3.so.3.53.0 "/usr/lib/${TRIPLET}/libsqlite3.so.0" 2>/dev/null || true; }
 
 WORKDIR /app
 
