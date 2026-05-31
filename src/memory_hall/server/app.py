@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import logging
 import math
+import os
 import random
 import re
 from contextlib import asynccontextmanager, suppress
@@ -60,6 +62,31 @@ _EMBED_FAILURE_LIMIT = 5
 _MAX_EMBED_ERROR_LENGTH = 500
 
 logger = logging.getLogger(__name__)
+
+
+class ProductionAuthError(RuntimeError):
+    """Raised when HTTP serving would expose unauthenticated write APIs."""
+
+
+def _is_loopback_bind_host(host: str) -> bool:
+    normalized = host.strip().lower().removeprefix("[").removesuffix("]")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def enforce_production_auth_guard(settings: Settings) -> None:
+    if _is_loopback_bind_host(settings.host) or settings.api_token:
+        return
+    if os.environ.get("MH_ALLOW_INSECURE") == "1":
+        return
+    raise ProductionAuthError(
+        f"Refusing to start: binding to {settings.host} without MH_API_TOKEN. "
+        "Set MH_API_TOKEN, bind to localhost, or set MH_ALLOW_INSECURE=1 to override."
+    )
 
 
 @dataclass(slots=True)
@@ -922,8 +949,10 @@ def create_app(
     vector_store: VectorStore | None = None,
     embedder: Embedder | None = None,
 ) -> FastAPI:
+    active_settings = settings or Settings()
+    enforce_production_auth_guard(active_settings)
     runtime = build_runtime(
-        settings=settings,
+        settings=active_settings,
         storage=storage,
         vector_store=vector_store,
         embedder=embedder,

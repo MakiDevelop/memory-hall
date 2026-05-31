@@ -200,6 +200,8 @@ Rationale in [ADR 0006](docs/adr/0006-http-embedder-embed-queue-isolation.md). T
 
 Set `MH_API_TOKEN` to require `Authorization: Bearer <token>` on `/v1/memory/*` endpoints (`/v1/health` stays public). Set a different `MH_ADMIN_TOKEN` to require a separate token on `/v1/admin/*`; when it is unset, admin endpoints fall back to `MH_API_TOKEN` for backward compatibility. Leave both unset for local dev. Rationale in [ADR 0007](docs/adr/0007-minimal-token-auth.md) and [ADR 0009](docs/adr/0009-admin-gate.md).
 
+**Production guard (fail-closed):** if you bind to a non-loopback host (e.g. `0.0.0.0` or a public IP) **without** `MH_API_TOKEN` set, memory-hall **refuses to start** — otherwise the write API would be exposed unauthenticated. Bind to `localhost`, set `MH_API_TOKEN`, or set `MH_ALLOW_INSECURE=1` to explicitly override. Local `localhost` dev without a token is unaffected.
+
 ---
 
 ## What v0.2 is / isn't (honest expectations)

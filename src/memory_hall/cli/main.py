@@ -17,7 +17,7 @@ from rich.table import Table
 
 from memory_hall.config import Settings
 from memory_hall.models import encode_cursor
-from memory_hall.server.app import create_app
+from memory_hall.server.app import ProductionAuthError, create_app
 from memory_hall.storage.sqlite_store import SqliteStore
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -90,7 +90,12 @@ def serve(
         settings.database_path = database_path
     if vector_database_path is not None:
         settings.vector_database_path = vector_database_path
-    uvicorn.run(create_app(settings=settings), host=settings.host, port=settings.port)
+    try:
+        server_app = create_app(settings=settings)
+    except ProductionAuthError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    uvicorn.run(server_app, host=settings.host, port=settings.port)
 
 
 @app.command()
