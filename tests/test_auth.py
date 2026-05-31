@@ -117,6 +117,21 @@ async def test_auth_enabled_search_requires_token(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_auth_uses_scope_path_not_host_spoofed_health_path(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.api_token = "secret-token-abc"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/memory/write",
+            json=_write_payload(),
+            headers={"Host": "testserver/v1/health?"},
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing bearer token"
+
+
 # ---------- ADR 0009: admin gate (two-tier bearer) ------------------------
 
 
@@ -175,6 +190,24 @@ async def test_admin_token_set_missing_header_returns_401(tmp_path: Path) -> Non
         response = await client.post("/v1/admin/audit")
     assert response.status_code == 401
     assert response.json()["detail"] == "missing bearer token"
+
+
+@pytest.mark.asyncio
+async def test_admin_gate_uses_scope_path_not_host_spoofed_non_admin_path(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.api_token = "shared-token"
+    settings.admin_token = "admin-only-token"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/admin/audit",
+            headers={
+                "Authorization": "Bearer shared-token",
+                "Host": "testserver/v1/memory/write?",
+            },
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid admin token"
 
 
 @pytest.mark.asyncio

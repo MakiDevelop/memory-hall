@@ -946,7 +946,7 @@ def create_app(
     async def require_api_token(request: Request, call_next):
         # Health probe routes stay public for uptime monitors and container
         # orchestrators.
-        path = request.url.path.rstrip("/")
+        path = request.scope["path"].rstrip("/")
         if path == "/v1/health":
             return await call_next(request)
         # /v1/admin/* with explicit admin_token configured requires the
@@ -982,7 +982,7 @@ def create_app(
 
     @app.middleware("http")
     async def enforce_write_content_limit(request: Request, call_next):
-        if request.method == "POST" and request.url.path == "/v1/memory/write":
+        if request.method == "POST" and request.scope["path"] == "/v1/memory/write":
             body = await request.body()
             if body:
                 try:
