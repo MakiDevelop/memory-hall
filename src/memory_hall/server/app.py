@@ -339,10 +339,13 @@ class MemoryHallRuntime:
         entry_id: str,
         metadata_patch: dict[str, object],
     ) -> EntryDocument | None:
+        from memory_hall.metadata_patch import filter_amh_metadata_patch
+
+        filtered = filter_amh_metadata_patch(metadata_patch)
         entry = await self.storage.merge_entry_metadata(
             tenant_id,
             entry_id,
-            metadata_patch,
+            filtered,
         )
         if entry is None:
             return None

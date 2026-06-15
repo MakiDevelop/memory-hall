@@ -82,7 +82,7 @@ On duplicate content, `insert_entry` returns the **existing** row and does **not
 
 **Impact on AMH revoke:** AMH tries to re-write the same content with `amh_status: revoked`. Engine returns 200 dedup hit; status stays `active`.
 
-**Fixed (2026-06-15):** `PATCH /v1/memory/{entry_id}` shallow-merges `metadata`. AMH revoke/supersede use this path.
+**Fixed (2026-06-15):** `PATCH /v1/memory/{entry_id}` shallow-merges `metadata` (allowlist: `amh_*`, `revoked_by`, `revoked_reason`). AMH revoke/supersede use this path; supersede graph via `POST …/link`.
 
 ---
 
