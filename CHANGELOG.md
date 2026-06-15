@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). memory-
 
 ### Added
 
+- **`GET /v1/memory/by-hash`** and **`GET /v1/memory/by-amh-hash`** — exact hash lookup for AMH dedup visibility (`integration:memhall-amh` Phase 3).
+- **AMH contract tests** — `tests/test_amh_contract.py`, `scripts/contract_test_server.py`.
 - **PATCH metadata allowlist** — only `amh_*`, `revoked_by`, `revoked_reason` keys applied (`integration:memhall-amh` Phase 2).
 - **`PATCH /v1/memory/{entry_id}`** — shallow-merge `metadata` only (`integration:memhall-amh`). Enables AMH revoke/supersede without re-writing content (bypasses content-hash dedup).
 - **`MH_API_TOKEN` minimal-token auth** (opt-in). When set, every endpoint except `GET /v1/health` requires `Authorization: Bearer <token>`. Unset = no auth (backward compatible). Rationale, scope limits, and sunset criteria in [ADR 0007](docs/adr/0007-minimal-token-auth.md). Generate a token with `openssl rand -hex 32`.

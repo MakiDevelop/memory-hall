@@ -104,6 +104,14 @@ Hybrid lexical + semantic search.
 }
 ```
 
+### `GET /v1/memory/by-hash?content_hash=&namespace=`
+
+Exact lookup by engine `content_hash` (`sha256:…`). Optional `namespace` scopes the match.
+
+### `GET /v1/memory/by-amh-hash?namespace=&hash=`
+
+Lookup by `metadata.amh_content_hash` (BLAKE3 hex from AMH). Used by `MemhallStore.findByContentHash`.
+
 ### `GET /v1/memory/{entry_id}`
 
 Single entry with reference graph (one hop).

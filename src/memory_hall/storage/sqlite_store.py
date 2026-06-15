@@ -229,6 +229,28 @@ class SqliteStore:
 
         return await self._run_read_operation(operation)
 
+    async def get_entry_by_amh_content_hash(
+        self,
+        tenant_id: str,
+        namespace: str,
+        amh_content_hash: str,
+    ) -> Entry | None:
+        async def operation(connection: aiosqlite.Connection) -> Entry | None:
+            cursor = await connection.execute(
+                """
+                SELECT * FROM entries
+                WHERE tenant_id = ?
+                  AND namespace = ?
+                  AND json_extract(metadata_json, '$.amh_content_hash') = ?
+                LIMIT 1
+                """,
+                (tenant_id, namespace, amh_content_hash),
+            )
+            row = await cursor.fetchone()
+            return self._row_to_entry(row) if row else None
+
+        return await self._run_read_operation(operation)
+
     async def get_entries_by_ids(self, tenant_id: str, entry_ids: list[str]) -> list[Entry]:
         if not entry_ids:
             return []

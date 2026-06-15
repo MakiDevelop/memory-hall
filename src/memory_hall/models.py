@@ -217,6 +217,10 @@ class PatchMemoryResponse(BaseModel):
     entry: EntryDocument
 
 
+class LookupEntryResponse(BaseModel):
+    entry: EntryDocument
+
+
 class LinkEntryRequest(BaseModel):
     target_entry_id: str = Field(min_length=1)
     relation: str | None = None
