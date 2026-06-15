@@ -55,7 +55,9 @@ When `--store memhall` is used, the adapter maps AMH records into standard write
 
 Lifecycle states: `metadata.amh_status` ∈ `active` | `superseded` | `revoked` | `expired`.
 
-AMH default reads filter inactive statuses in the protocol layer. Engine search **does not** filter by `amh_status` unless the caller adds metadata filters (future).
+AMH default reads filter inactive statuses in the protocol layer. Engine search **does not** filter by `amh_status` (deferred per council — stays AMH read layer).
+
+**Phase 3 CI:** `scripts/contract_test_server.py` + `tests/test_amh_contract.py`; AMH repo runs `integration-memhall.yml` on `main`.
 
 ---
 
@@ -66,7 +68,9 @@ AMH default reads filter inactive statuses in the protocol layer. Engine search 
 | Persist content | `POST /v1/memory/write` | ✅ |
 | Fetch by id | `GET /v1/memory/{entry_id}` | ✅ |
 | Hybrid recall | `POST /v1/memory/search` | ✅ |
-| Supersede graph | `POST /v1/memory/{id}/link` | ✅ API; AMH not wired |
+| Supersede graph | `POST /v1/memory/{id}/link` | ✅ AMH 0.6.4+ |
+| Hash lookup (engine) | `GET /v1/memory/by-hash` | ✅ Phase 3 |
+| Hash lookup (AMH BLAKE3) | `GET /v1/memory/by-amh-hash` | ✅ Phase 3 |
 | Stable id on write | `entry_id` in response (ULID) | ✅ server-side |
 | Client-chosen id | `entry_id` in request body | ❌ not in schema |
 | Metadata update without content change | `PATCH /v1/memory/{id}` | ✅ shallow merge (2026-06-15) |
