@@ -332,6 +332,52 @@ class MemoryHallRuntime:
             references_in=[EntryDocument.from_entry(item) for item in references_in],
         )
 
+    async def get_entry_by_content_hash(
+        self,
+        *,
+        tenant_id: str,
+        content_hash: str,
+    ) -> EntryDocument | None:
+        entry = await self.storage.get_entry_by_hash(tenant_id, content_hash)
+        if entry is None:
+            return None
+        return EntryDocument.from_entry(entry)
+
+    async def get_entry_by_amh_content_hash(
+        self,
+        *,
+        tenant_id: str,
+        namespace: str,
+        amh_content_hash: str,
+    ) -> EntryDocument | None:
+        entry = await self.storage.get_entry_by_amh_content_hash(
+            tenant_id,
+            namespace,
+            amh_content_hash,
+        )
+        if entry is None:
+            return None
+        return EntryDocument.from_entry(entry)
+
+    async def patch_entry_metadata(
+        self,
+        *,
+        tenant_id: str,
+        entry_id: str,
+        metadata_patch: dict[str, object],
+    ) -> EntryDocument | None:
+        from memory_hall.metadata_patch import filter_amh_metadata_patch
+
+        filtered = filter_amh_metadata_patch(metadata_patch)
+        entry = await self.storage.merge_entry_metadata(
+            tenant_id,
+            entry_id,
+            filtered,
+        )
+        if entry is None:
+            return None
+        return EntryDocument.from_entry(entry)
+
     async def list_entries(
         self,
         *,

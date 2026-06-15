@@ -28,7 +28,21 @@ class Storage(Protocol):
 
     async def get_entry(self, tenant_id: str, entry_id: str) -> Entry | None: ...
 
+    async def merge_entry_metadata(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        metadata_patch: dict[str, object],
+    ) -> Entry | None: ...
+
     async def get_entry_by_hash(self, tenant_id: str, content_hash: str) -> Entry | None: ...
+
+    async def get_entry_by_amh_content_hash(
+        self,
+        tenant_id: str,
+        namespace: str,
+        amh_content_hash: str,
+    ) -> Entry | None: ...
 
     async def get_entries_by_ids(self, tenant_id: str, entry_ids: list[str]) -> list[Entry]: ...
 

@@ -207,6 +207,20 @@ class GetEntryResponse(BaseModel):
     references_in: list[EntryDocument]
 
 
+class PatchMemoryRequest(BaseModel):
+    """Shallow-merge metadata keys only (AMH revoke/supersede lifecycle)."""
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PatchMemoryResponse(BaseModel):
+    entry: EntryDocument
+
+
+class LookupEntryResponse(BaseModel):
+    entry: EntryDocument
+
+
 class LinkEntryRequest(BaseModel):
     target_entry_id: str = Field(min_length=1)
     relation: str | None = None

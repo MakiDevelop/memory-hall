@@ -118,6 +118,10 @@ Every feature above would break that promise. The promise is the product.
 
 See [`docs/adr/0003-engine-library-vs-deployment-platform.md`](docs/adr/0003-engine-library-vs-deployment-platform.md) for the full engine-vs-platform rationale.
 
+### Agent Memory Hall (AMH)
+
+Governance (write-gate, revoke, namespace isolation, MCP) lives in the sibling repo [agent-memory-hall](https://github.com/MakiDevelop/agent-memory-hall). Agents should prefer `amh write` / `amh_read` over raw HTTP when they need audit or lifecycle rules. Stack and adapter gaps: [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
+
 ---
 
 ## Three entry points

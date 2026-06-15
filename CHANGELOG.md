@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). memory-
 
 ### Added
 
+- **`GET /v1/memory/by-hash`** and **`GET /v1/memory/by-amh-hash`** — exact hash lookup for AMH dedup visibility (`integration:memhall-amh` Phase 3).
+- **AMH contract tests** — `tests/test_amh_contract.py`, `scripts/contract_test_server.py`.
+- **PATCH metadata allowlist** — only `amh_*`, `revoked_by`, `revoked_reason` keys applied (`integration:memhall-amh` Phase 2).
+- **`PATCH /v1/memory/{entry_id}`** — shallow-merge `metadata` only (`integration:memhall-amh`). Enables AMH revoke/supersede without re-writing content (bypasses content-hash dedup).
 - **`MH_API_TOKEN` minimal-token auth** (opt-in). When set, every endpoint except `GET /v1/health` requires `Authorization: Bearer <token>`. Unset = no auth (backward compatible). Rationale, scope limits, and sunset criteria in [ADR 0007](docs/adr/0007-minimal-token-auth.md). Generate a token with `openssl rand -hex 32`.
 - **`HttpEmbedder`** — second embedder backend alongside `OllamaEmbedder`. Speaks a minimal `POST /embed` / `{"texts": [...]}` → `{"dense_vecs": [...]}` contract. Opt in with `MH_EMBEDDER_KIND=http` + `MH_EMBED_BASE_URL=...`. Rationale in [ADR 0006](docs/adr/0006-http-embedder-embed-queue-isolation.md).
 - **`health_embed_timeout_s`** config (default `3.0s`) — separate knob for `/v1/health` embed-probe timeout, independent from write-path `embed_timeout_s`. Fixes a 1-second hardcoded timeout that was too tight for remote embed services.

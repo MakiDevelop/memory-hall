@@ -13,6 +13,9 @@ from memory_hall.models import (
     LinkEntryRequest,
     LinkEntryResponse,
     ListEntriesResponse,
+    LookupEntryResponse,
+    PatchMemoryRequest,
+    PatchMemoryResponse,
     SearchMemoryRequest,
     SearchMemoryResponse,
     WriteMemoryRequest,
@@ -47,6 +50,41 @@ async def search_entries(
     return await runtime.search_entries(tenant_id=request.state.tenant_id, payload=payload)
 
 
+@router.get("/by-hash", response_model=LookupEntryResponse)
+async def get_by_content_hash(
+    request: Request,
+    content_hash: str = Query(min_length=1),
+    namespace: str | None = Query(default=None),
+) -> LookupEntryResponse:
+    runtime = request.app.state.runtime
+    entry = await runtime.get_entry_by_content_hash(
+        tenant_id=request.state.tenant_id,
+        content_hash=content_hash,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="entry not found")
+    if namespace is not None and entry.namespace != namespace:
+        raise HTTPException(status_code=404, detail="entry not found")
+    return LookupEntryResponse(entry=entry)
+
+
+@router.get("/by-amh-hash", response_model=LookupEntryResponse)
+async def get_by_amh_content_hash(
+    request: Request,
+    namespace: str = Query(min_length=1),
+    hash: str = Query(min_length=1, alias="hash"),
+) -> LookupEntryResponse:
+    runtime = request.app.state.runtime
+    entry = await runtime.get_entry_by_amh_content_hash(
+        tenant_id=request.state.tenant_id,
+        namespace=namespace,
+        amh_content_hash=hash,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="entry not found")
+    return LookupEntryResponse(entry=entry)
+
+
 @router.get("/{entry_id}", response_model=GetEntryResponse)
 async def get_entry(entry_id: str, request: Request) -> GetEntryResponse:
     runtime = request.app.state.runtime
@@ -54,6 +92,23 @@ async def get_entry(entry_id: str, request: Request) -> GetEntryResponse:
     if response is None:
         raise HTTPException(status_code=404, detail="entry not found")
     return response
+
+
+@router.patch("/{entry_id}", response_model=PatchMemoryResponse)
+async def patch_entry_metadata(
+    entry_id: str,
+    payload: PatchMemoryRequest,
+    request: Request,
+) -> PatchMemoryResponse:
+    runtime = request.app.state.runtime
+    entry = await runtime.patch_entry_metadata(
+        tenant_id=request.state.tenant_id,
+        entry_id=entry_id,
+        metadata_patch=payload.metadata,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="entry not found")
+    return PatchMemoryResponse(entry=entry)
 
 
 @router.post("/{entry_id}/link", response_model=LinkEntryResponse)
