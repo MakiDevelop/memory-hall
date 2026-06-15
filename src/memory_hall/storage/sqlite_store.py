@@ -177,6 +177,47 @@ class SqliteStore:
 
         return await self._run_read_operation(operation)
 
+    async def merge_entry_metadata(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        metadata_patch: dict[str, object],
+    ) -> Entry | None:
+        if not metadata_patch:
+            return await self.get_entry(tenant_id, entry_id)
+
+        async def operation(connection: aiosqlite.Connection) -> bool:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await connection.execute(
+                    "SELECT metadata_json FROM entries WHERE tenant_id = ? AND entry_id = ?",
+                    (tenant_id, entry_id),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    await connection.rollback()
+                    return False
+                existing = json.loads(row["metadata_json"] or "{}")
+                merged = {**existing, **metadata_patch}
+                await connection.execute(
+                    """
+                    UPDATE entries
+                    SET metadata_json = ?
+                    WHERE tenant_id = ? AND entry_id = ?
+                    """,
+                    (dump_json(merged), tenant_id, entry_id),
+                )
+                await connection.commit()
+                return True
+            except Exception:
+                await connection.rollback()
+                raise
+
+        updated = await self._run_writer_operation(operation)
+        if not updated:
+            return None
+        return await self.get_entry(tenant_id, entry_id)
+
     async def get_entry_by_hash(self, tenant_id: str, content_hash: str) -> Entry | None:
         async def operation(connection: aiosqlite.Connection) -> Entry | None:
             cursor = await connection.execute(

@@ -13,6 +13,8 @@ from memory_hall.models import (
     LinkEntryRequest,
     LinkEntryResponse,
     ListEntriesResponse,
+    PatchMemoryRequest,
+    PatchMemoryResponse,
     SearchMemoryRequest,
     SearchMemoryResponse,
     WriteMemoryRequest,
@@ -54,6 +56,23 @@ async def get_entry(entry_id: str, request: Request) -> GetEntryResponse:
     if response is None:
         raise HTTPException(status_code=404, detail="entry not found")
     return response
+
+
+@router.patch("/{entry_id}", response_model=PatchMemoryResponse)
+async def patch_entry_metadata(
+    entry_id: str,
+    payload: PatchMemoryRequest,
+    request: Request,
+) -> PatchMemoryResponse:
+    runtime = request.app.state.runtime
+    entry = await runtime.patch_entry_metadata(
+        tenant_id=request.state.tenant_id,
+        entry_id=entry_id,
+        metadata_patch=payload.metadata,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="entry not found")
+    return PatchMemoryResponse(entry=entry)
 
 
 @router.post("/{entry_id}/link", response_model=LinkEntryResponse)

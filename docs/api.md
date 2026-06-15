@@ -108,6 +108,22 @@ Hybrid lexical + semantic search.
 
 Single entry with reference graph (one hop).
 
+### `PATCH /v1/memory/{entry_id}`
+
+Shallow-merge `metadata` keys only. Used by [Agent Memory Hall](https://github.com/MakiDevelop/agent-memory-hall) for revoke/supersede lifecycle without re-inserting content (content-hash dedup would otherwise ignore status updates).
+
+**Body**:
+```json
+{
+  "metadata": {
+    "amh_status": "revoked",
+    "revoked_by": "codex"
+  }
+}
+```
+
+**Response 200**: `{ "entry": { ... } }` — merged metadata preserves keys not in the patch.
+
 ### `GET /v1/memory?since=&until=&namespace=&agent_id=&type=&limit=&cursor=`
 
 Paginated list.

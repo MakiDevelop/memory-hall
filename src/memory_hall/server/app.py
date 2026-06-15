@@ -332,6 +332,22 @@ class MemoryHallRuntime:
             references_in=[EntryDocument.from_entry(item) for item in references_in],
         )
 
+    async def patch_entry_metadata(
+        self,
+        *,
+        tenant_id: str,
+        entry_id: str,
+        metadata_patch: dict[str, object],
+    ) -> EntryDocument | None:
+        entry = await self.storage.merge_entry_metadata(
+            tenant_id,
+            entry_id,
+            metadata_patch,
+        )
+        if entry is None:
+            return None
+        return EntryDocument.from_entry(entry)
+
     async def list_entries(
         self,
         *,
