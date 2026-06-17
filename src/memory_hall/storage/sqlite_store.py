@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -457,6 +457,43 @@ class SqliteStore:
 
         return await self._run_read_operation(operation)
 
+    async def baton_read(self, namespace: str) -> tuple[dict | None, str | None]:
+        async def operation(connection: aiosqlite.Connection) -> tuple[dict | None, str | None]:
+            cursor = await connection.execute(
+                "SELECT data, updated_at FROM batons WHERE namespace = ?",
+                (namespace,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None, None
+            return json.loads(row["data"]), row["updated_at"]
+
+        return await self._run_read_operation(operation)
+
+    async def baton_write(self, namespace: str, data: dict) -> str:
+        updated_at = datetime.now(UTC).isoformat()
+
+        async def operation(connection: aiosqlite.Connection) -> str:
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO batons (namespace, updated_at, data)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(namespace) DO UPDATE SET
+                        data = excluded.data,
+                        updated_at = excluded.updated_at
+                    """,
+                    (namespace, updated_at, dump_json(data)),
+                )
+                await connection.commit()
+                return updated_at
+            except Exception:
+                await connection.rollback()
+                raise
+
+        return await self._run_writer_operation(operation)
+
     async def get_references_out(self, tenant_id: str, entry_id: str) -> list[Entry]:
         async def operation(connection: aiosqlite.Connection) -> list[Entry]:
             cursor = await connection.execute(
@@ -635,6 +672,12 @@ class SqliteStore:
                 summary,
                 tags,
                 tokenize='unicode61 remove_diacritics 0'
+            );
+
+            CREATE TABLE IF NOT EXISTS batons (
+                namespace TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                data TEXT NOT NULL
             );
             """
         )

@@ -256,3 +256,24 @@ class HealthResponse(BaseModel):
     embedder: str
     last_success_at: datetime | None = None
     last_error: str | None = None
+
+
+class BatonReadRequest(BaseModel):
+    namespace: str = Field(min_length=1)
+
+
+class BatonReadResponse(BaseModel):
+    baton: dict[str, Any] | None
+    namespace: str
+    updated_at: str | None = None
+
+
+class BatonWriteRequest(BaseModel):
+    namespace: str = Field(min_length=1)
+    baton: dict[str, Any]
+
+
+class BatonWriteResponse(BaseModel):
+    ok: bool
+    updated_at: str
+    namespace: str

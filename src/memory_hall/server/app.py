@@ -45,7 +45,7 @@ from memory_hall.models import (
     utc_now,
 )
 from memory_hall.server.middleware.tenant import TenantMiddleware
-from memory_hall.server.routes import admin_router, health_router, memory_router
+from memory_hall.server.routes import admin_router, baton_router, health_router, memory_router
 from memory_hall.storage.interface import Storage
 from memory_hall.storage.sqlite_store import SqliteStore
 from memory_hall.storage.vector_store import SqliteVecStore, VectorStore
@@ -1085,6 +1085,7 @@ def create_app(
 
     app.add_middleware(TenantMiddleware, tenant_id=active_settings.default_tenant_id)
     app.include_router(health_router)
+    app.include_router(baton_router)
     app.include_router(memory_router)
     app.include_router(admin_router)
     return app
