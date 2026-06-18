@@ -97,6 +97,18 @@ class Storage(Protocol):
 
     async def get_references_in(self, tenant_id: str, entry_id: str) -> list[Entry]: ...
 
+    async def baton_read(
+        self, tenant_id: str, namespace: str
+    ) -> tuple[dict | None, str | None, int | None]: ...
+
+    async def baton_write(
+        self,
+        tenant_id: str,
+        namespace: str,
+        data: dict,
+        expected_revision: int | None = None,
+    ) -> tuple[str, int]: ...
+
     async def checkpoint_wal(self, *, mode: str = "TRUNCATE") -> tuple[int, int, int]: ...
 
     async def audit(self) -> dict[str, object]: ...

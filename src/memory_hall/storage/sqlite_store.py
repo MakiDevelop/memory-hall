@@ -25,6 +25,24 @@ _TRANSIENT_OPERATIONAL_ERROR_MARKERS = (
 logger = logging.getLogger(__name__)
 
 
+class BatonCasConflictError(Exception):
+    def __init__(
+        self,
+        *,
+        namespace: str,
+        expected_revision: int,
+        current_baton: dict | None,
+        current_updated_at: str | None,
+        current_revision: int | None,
+    ) -> None:
+        super().__init__("baton revision conflict")
+        self.namespace = namespace
+        self.expected_revision = expected_revision
+        self.current_baton = current_baton
+        self.current_updated_at = current_updated_at
+        self.current_revision = current_revision
+
+
 class SqliteStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -457,37 +475,84 @@ class SqliteStore:
 
         return await self._run_read_operation(operation)
 
-    async def baton_read(self, namespace: str) -> tuple[dict | None, str | None]:
-        async def operation(connection: aiosqlite.Connection) -> tuple[dict | None, str | None]:
+    async def baton_read(
+        self, tenant_id: str, namespace: str
+    ) -> tuple[dict | None, str | None, int | None]:
+        async def operation(
+            connection: aiosqlite.Connection,
+        ) -> tuple[dict | None, str | None, int | None]:
             cursor = await connection.execute(
-                "SELECT data, updated_at FROM batons WHERE namespace = ?",
-                (namespace,),
+                """
+                SELECT data, updated_at, revision
+                FROM batons
+                WHERE tenant_id = ? AND namespace = ?
+                """,
+                (tenant_id, namespace),
             )
             row = await cursor.fetchone()
             if row is None:
-                return None, None
-            return json.loads(row["data"]), row["updated_at"]
+                return None, None, None
+            return json.loads(row["data"]), row["updated_at"], row["revision"]
 
         return await self._run_read_operation(operation)
 
-    async def baton_write(self, namespace: str, data: dict) -> str:
+    async def baton_write(
+        self,
+        tenant_id: str,
+        namespace: str,
+        data: dict,
+        expected_revision: int | None = None,
+    ) -> tuple[str, int]:
         updated_at = datetime.now(UTC).isoformat()
 
-        async def operation(connection: aiosqlite.Connection) -> str:
+        async def operation(connection: aiosqlite.Connection) -> tuple[str, int]:
             await connection.execute("BEGIN IMMEDIATE")
             try:
-                await connection.execute(
+                cursor = await connection.execute(
                     """
-                    INSERT INTO batons (namespace, updated_at, data)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(namespace) DO UPDATE SET
-                        data = excluded.data,
-                        updated_at = excluded.updated_at
+                    SELECT data, updated_at, revision
+                    FROM batons
+                    WHERE tenant_id = ? AND namespace = ?
                     """,
-                    (namespace, updated_at, dump_json(data)),
+                    (tenant_id, namespace),
                 )
+                row = await cursor.fetchone()
+
+                if expected_revision is not None and (
+                    row is None or row["revision"] != expected_revision
+                ):
+                    raise BatonCasConflictError(
+                        namespace=namespace,
+                        expected_revision=expected_revision,
+                        current_baton=json.loads(row["data"]) if row is not None else None,
+                        current_updated_at=row["updated_at"] if row is not None else None,
+                        current_revision=row["revision"] if row is not None else None,
+                    )
+
+                if row is None:
+                    revision = 1
+                    await connection.execute(
+                        """
+                        INSERT INTO batons (tenant_id, namespace, updated_at, data, revision)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (tenant_id, namespace, updated_at, dump_json(data), revision),
+                    )
+                else:
+                    revision = row["revision"] + 1
+                    await connection.execute(
+                        """
+                        UPDATE batons
+                        SET data = ?, updated_at = ?, revision = ?
+                        WHERE tenant_id = ? AND namespace = ?
+                        """,
+                        (dump_json(data), updated_at, revision, tenant_id, namespace),
+                    )
                 await connection.commit()
-                return updated_at
+                return updated_at, revision
+            except BatonCasConflictError:
+                await connection.rollback()
+                raise
             except Exception:
                 await connection.rollback()
                 raise
@@ -675,9 +740,12 @@ class SqliteStore:
             );
 
             CREATE TABLE IF NOT EXISTS batons (
-                namespace TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                namespace TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                data TEXT NOT NULL
+                data TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (tenant_id, namespace)
             );
             """
         )
@@ -709,6 +777,46 @@ class SqliteStore:
             SET embed_attempt_count = COALESCE(embed_attempt_count, 0)
             """
         )
+        await self._apply_baton_schema_migration(connection)
+
+    async def _apply_baton_schema_migration(self, connection: aiosqlite.Connection) -> None:
+        cursor = await connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'batons'"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return
+        table_sql = row["sql"] or ""
+        if "PRIMARY KEY (tenant_id, namespace)" in table_sql:
+            return
+
+        # Runs inside _create_schema's transaction — no separate BEGIN needed.
+        await connection.execute("ALTER TABLE batons RENAME TO batons_legacy")
+        await connection.execute(
+            """
+            CREATE TABLE batons (
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                namespace TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                data TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (tenant_id, namespace)
+            )
+            """
+        )
+
+        cursor = await connection.execute("PRAGMA table_info(batons_legacy)")
+        legacy_columns = {legacy_row["name"] for legacy_row in await cursor.fetchall()}
+        tenant_expr = "tenant_id" if "tenant_id" in legacy_columns else "'default'"
+        revision_expr = "revision" if "revision" in legacy_columns else "1"
+        await connection.execute(
+            f"""
+            INSERT INTO batons (tenant_id, namespace, updated_at, data, revision)
+            SELECT {tenant_expr}, namespace, updated_at, data, {revision_expr}
+            FROM batons_legacy
+            """
+        )
+        await connection.execute("DROP TABLE batons_legacy")
 
     async def _require_writer_connection(self) -> aiosqlite.Connection:
         if self._writer_connection is None:

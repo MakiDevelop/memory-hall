@@ -266,14 +266,17 @@ class BatonReadResponse(BaseModel):
     baton: dict[str, Any] | None
     namespace: str
     updated_at: str | None = None
+    revision: int | None = None
 
 
 class BatonWriteRequest(BaseModel):
     namespace: str = Field(min_length=1)
     baton: dict[str, Any]
+    expected_revision: int | None = None
 
 
 class BatonWriteResponse(BaseModel):
     ok: bool
     updated_at: str
     namespace: str
+    revision: int
