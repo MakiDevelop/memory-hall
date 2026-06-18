@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,15 @@ def _write_payload() -> dict[str, object]:
         "type": "note",
         "content": "auth-test",
     }
+
+
+def _json_body(payload: dict[str, object]) -> bytes:
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def _hmac_header(*, key_id: str, secret: str, body: bytes) -> str:
+    signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"HMAC {key_id}:{signature}"
 
 
 def test_production_auth_guard_rejects_non_loopback_without_token(
@@ -70,25 +82,100 @@ def test_production_auth_guard_allows_localhost_without_token(
 
 
 @pytest.mark.asyncio
-async def test_auth_disabled_allows_unauthenticated_write(tmp_path: Path) -> None:
+async def test_missing_authorization_returns_401(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     assert settings.api_token is None
     app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
     async with client_for_app(app) as client:
         response = await client.post("/v1/memory/write", json=_write_payload())
-    assert response.status_code in (200, 201, 202)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing or invalid authorization"
 
 
 @pytest.mark.asyncio
-async def test_auth_empty_string_token_also_disables_auth(tmp_path: Path) -> None:
+async def test_dev_mode_allows_unauthenticated_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # docker-compose `${MH_API_TOKEN:-}` expands to "" when host env is unset.
     # pydantic reads that as "" (not None). Middleware must treat "" like None.
+    monkeypatch.setenv("MH_DEV_MODE", "1")
     settings = build_settings(tmp_path)
     settings.api_token = ""
     app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
     async with client_for_app(app) as client:
         response = await client.post("/v1/memory/write", json=_write_payload())
+        entry_response = await client.get(f"/v1/memory/{response.json()['entry_id']}")
     assert response.status_code in (200, 201, 202)
+    assert entry_response.status_code == 200
+    assert entry_response.json()["entry"]["created_by_principal"] == "dev-local"
+
+
+@pytest.mark.asyncio
+async def test_bearer_auth_uses_bearer_user_principal(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    settings.api_token = "secret-token-abc"
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/memory/write",
+            json=_write_payload(),
+            headers={"Authorization": "Bearer secret-token-abc"},
+        )
+        entry_response = await client.get(
+            f"/v1/memory/{response.json()['entry_id']}",
+            headers={"Authorization": "Bearer secret-token-abc"},
+        )
+    assert response.status_code in (200, 201, 202)
+    assert entry_response.status_code == 200
+    assert entry_response.json()["entry"]["created_by_principal"] == "bearer-user"
+
+
+@pytest.mark.asyncio
+async def test_hmac_auth_valid_signature_uses_key_id_principal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "hmac-secret"
+    monkeypatch.setenv("MH_HMAC_SECRET", secret)
+    settings = build_settings(tmp_path)
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    body = _json_body(_write_payload())
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/memory/write",
+            content=body,
+            headers={
+                "Authorization": _hmac_header(key_id="agent-key", secret=secret, body=body),
+                "Content-Type": "application/json",
+            },
+        )
+        entry_response = await client.get(f"/v1/memory/{response.json()['entry_id']}")
+    assert response.status_code in (200, 201, 202)
+    assert entry_response.status_code == 200
+    assert entry_response.json()["entry"]["created_by_principal"] == "agent-key"
+
+
+@pytest.mark.asyncio
+async def test_hmac_auth_wrong_signature_returns_401(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MH_HMAC_SECRET", "hmac-secret")
+    settings = build_settings(tmp_path)
+    app = create_app(settings=settings, embedder=DeterministicEmbedder(dim=settings.vector_dim))
+    body = _json_body(_write_payload())
+    async with client_for_app(app) as client:
+        response = await client.post(
+            "/v1/memory/write",
+            content=body,
+            headers={
+                "Authorization": "HMAC agent-key:wrong",
+                "Content-Type": "application/json",
+            },
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing or invalid authorization"
 
 
 @pytest.mark.asyncio

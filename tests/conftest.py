@@ -82,10 +82,12 @@ def deterministic_embedder() -> DeterministicEmbedder:
 def isolate_api_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MH_API_TOKEN", raising=False)
     monkeypatch.delenv("MH_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("MH_DEV_MODE", raising=False)
+    monkeypatch.delenv("MH_HMAC_SECRET", raising=False)
 
 
 @pytest.fixture()
-def app_factory(tmp_path: Path):
+def app_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def factory(
         *,
         tenant_id: str = "default",
@@ -93,6 +95,7 @@ def app_factory(tmp_path: Path):
         base_dir: Path | None = None,
         hybrid_mode: str | None = None,
     ):
+        monkeypatch.setenv("MH_DEV_MODE", "1")
         root = base_dir or tmp_path
         settings = build_settings(root, tenant_id=tenant_id)
         if hybrid_mode is not None:

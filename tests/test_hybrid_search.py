@@ -168,7 +168,11 @@ async def test_weighted_linear_rewards_entries_that_hit_both_signals(app_factory
 
 
 @pytest.mark.asyncio
-async def test_hybrid_search_supports_legacy_rrf_mode(tmp_path: Path) -> None:
+async def test_hybrid_search_supports_legacy_rrf_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MH_DEV_MODE", "1")
     settings = build_settings(tmp_path)
     settings.hybrid_mode = "rrf"
     app = create_app(
