@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -23,6 +24,7 @@ from memory_hall.models import (
 )
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
+_audit_log = logging.getLogger("memory_hall.audit")
 
 
 @router.post("/write", response_model=WriteMemoryResponse)
@@ -45,9 +47,32 @@ async def write_entry(
 async def search_entries(
     payload: SearchMemoryRequest,
     request: Request,
+    principal: Principal = Depends(get_principal),
 ) -> SearchMemoryResponse:
+    requested_agent_id = payload.agent_id
+
+    if principal.is_privileged:
+        decision = "allowed_privileged"
+    else:
+        # Bearer (user role): trust client-supplied agent_id, don't auto-scope.
+        # Single-user deployment — Bearer token holder is trusted.
+        # Cross-agent isolation enforced at token tier (HMAC vs Bearer), not query filter.
+        decision = "allowed_user"
+
     runtime = request.app.state.runtime
-    return await runtime.search_entries(tenant_id=request.state.tenant_id, payload=payload)
+    result = await runtime.search_entries(tenant_id=request.state.tenant_id, payload=payload)
+
+    _audit_log.info(
+        "search_privacy decision=%s principal=%s role=%s requested_agent_id=%s effective_agent_id=%s result_count=%d",
+        decision,
+        principal.principal_id,
+        principal.role,
+        requested_agent_id,
+        payload.agent_id,
+        result.total,
+    )
+
+    return result
 
 
 @router.get("/by-hash", response_model=LookupEntryResponse)
