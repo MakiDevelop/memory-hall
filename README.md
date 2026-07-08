@@ -1,6 +1,7 @@
 # memory-hall
 
-> **The AI agent memory engine that deliberately stays small.**
+> **The server backend for [Agent Memory Hall](https://github.com/MakiDevelop/agent-memory-hall).**
+> Deploy when you outgrow local SQLite and need hybrid search, multi-device sync, or team sharing.
 >
 > SQLite + sqlite-vec + Ollama · CJK-native · HTTP / CLI / Python embedded · Apache 2.0
 
@@ -11,27 +12,38 @@
 
 ---
 
-Most AI agent memory tools want to become platforms. memory-hall refuses to.
+## How This Relates to agent-memory-hall
 
-It's three components (SQLite + sqlite-vec + Ollama), three entry points (HTTP / CLI / Python embedded), and one deliberate philosophy: **the engine only stores and retrieves. Your agent stack decides the memory structure.** No opinionated enrichment, no required MCP path, no mandatory auth, no replica. Just a fast, durable, CJK-aware store that runs on a single Mac mini.
+```
+agent-memory-hall (protocol + client)    ←── start here
+  │  /start /save /wrap-up + Baton
+  │  local SQLite (built-in, zero deps)
+  │
+  └──→ memory-hall (this repo, server)   ←── upgrade when needed
+       hybrid search (BM25 + vector)
+       multi-device sync
+       team sharing (team-memhall)
+       CJK-native tokenization
+       Baton Store with CAS locking
+```
+
+**Most users don't need this repo.** Start with [agent-memory-hall](https://github.com/MakiDevelop/agent-memory-hall)'s built-in SQLite — it's enough for solo developers. Deploy memory-hall when you need semantic search, multi-device sync, or team sharing.
 
 ---
 
 ## Why memory-hall exists
 
-AI agent memory in 2026 has no canonical implementation — OpenAI's is closed, Anthropic's is preview, and the OSS landscape split two ways:
+The engine deliberately stays small. Three components (SQLite + sqlite-vec + Ollama), three entry points (HTTP / CLI / Python embedded), one philosophy: **the engine only stores and retrieves. Your agent stack decides the memory structure.**
 
-- **Mem0 / Zep / LangMem** → SaaS or heavy. You rent memory, pay per volume, and inherit their opinions.
-- **engram-rs / robotmem / MemOS** → local-first but **growing features** (decay, topic trees, spatial retrieval, OS abstraction). Great if you want structured memory, complex if you don't.
+No opinionated enrichment, no required MCP path, no mandatory auth, no replica. Just a fast, durable, CJK-aware store that runs on a single Mac mini.
 
-memory-hall sits in the same neighborhood as engram-rs/robotmem/MemOS but **chose the opposite direction**:
-
-```
-engram-rs, robotmem, MemOS  →  grow upward (more features, opinions, abstractions)
-memory-hall                 →  shrink downward (less features, zero opinions, one engine)
-```
-
-If you want a memory engine that just stores and retrieves — and leaves structure to your agent stack — this is it.
+| Need | memory-hall | Mem0 / Zep | engram-rs / MemOS |
+|------|-------------|-----------|-------------------|
+| Philosophy | Engine only | Platform | Growing features |
+| Deployment | Self-host (Docker) | SaaS or heavy self-host | Self-host |
+| CJK | jieba at storage layer | Via embedder | BM25 + jieba |
+| Enrichment | None (by design) | Built-in | Built-in |
+| Works with AMH | Native (Baton Store + namespaces) | Via import | Not tested |
 
 ---
 
@@ -118,9 +130,11 @@ Every feature above would break that promise. The promise is the product.
 
 See [`docs/adr/0003-engine-library-vs-deployment-platform.md`](docs/adr/0003-engine-library-vs-deployment-platform.md) for the full engine-vs-platform rationale.
 
-### Agent Memory Hall (AMH)
+### Agent Memory Hall (AMH) — the entry point
 
-Governance (write-gate, revoke, namespace isolation, MCP) lives in the sibling repo [agent-memory-hall](https://github.com/MakiDevelop/agent-memory-hall). Agents should prefer `amh write` / `amh_read` over raw HTTP when they need audit or lifecycle rules. Stack and adapter gaps: [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
+**[agent-memory-hall](https://github.com/MakiDevelop/agent-memory-hall)** is the protocol, client, and entry point. It defines the session handoff protocol (`/start /save /wrap-up`), Baton (open-loop tracking), MCP server, and governance layer. Start there. Come here when you need a server.
+
+Agents should prefer `amh write` / `amh_read` over raw HTTP when they need audit or lifecycle rules. Stack and adapter gaps: [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
 ---
 
