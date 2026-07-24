@@ -18,7 +18,9 @@
 
 set -euo pipefail
 
-SRC_HOST="${MEMHALL_SRC_HOST:-100.122.171.74}"
+# Topology (2026-07-24 R3): primary = mini2, cold standby = mini1.
+# This script runs ON the backup host and pulls FROM primary.
+SRC_HOST="${MEMHALL_SRC_HOST:-100.89.41.50}"
 SRC_DIR="${MEMHALL_SRC_DIR:-data/memory-hall/}"
 DST="${MEMHALL_DST:-$HOME/data/memory-hall/}"
 LOG="${MEMHALL_LOG:-$HOME/logs/memhall-backup.log}"
