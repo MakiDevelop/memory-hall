@@ -1,8 +1,9 @@
 # memhall Cold Standby Promote Runbook
 
-> 狀態：2026-07-24 Phase 1（R3 cold standby）  
+> 狀態：2026-07-24 Phase 1（R3 cold standby）+ Council DL-4 合併（fence / integrity gate / snapshot）  
 > 主（live）：mini2 `100.89.41.50:9100`  
-> 備（cold）：mini1 `100.122.171.74:9100` — **平時 container 停、不監聽**
+> 備（cold）：mini1 `100.122.171.74:9100` — **平時 container 停、不監聽**  
+> 本檔為唯一正典；`docs/operations/promote-runbook.md` 已改為 pointer。
 
 ## 何時用
 
@@ -28,6 +29,13 @@ curl -s -m 5 -o /dev/null -w '%{http_code}\n' \
 ```
 
 第二來源（建議）：`ssh mini2-ts 'docker ps | grep memory-hall'` 或 ping Tailscale。
+記錄「最後一次成功寫入時間」與 mini1 backup log 最後 ok 時間（估 RPO 用）。
+
+### 1.5 Fence 舊主（防 split-brain — Council DL-4）
+
+mini2 仍可 SSH → 先停它的 memhall container；整機不可達 → 確認已關機/隔離。
+同時停止所有 agent 對 mini2 的寫入 retry。
+**風險**：`:9100` timeout 不代表 mini2 不會稍後復活繼續收寫入；未 fence 即促轉 = 雙主。
 
 ### 2. 停備機 rsync cron（防腦裂覆寫）
 
@@ -40,12 +48,23 @@ ssh mini1-ts 'crontab -l | sed "s|^\\(.*memhall-backup.*\\)|# PROMOTE-HOLD \\1|"
 
 **順序依賴**：必須先停 cron，再啟動 container。否則 cron 可能用「已死主機」的舊資料蓋掉剛轉正的備機。
 
-### 3. 檢查備機資料檔可接受
+### 3. 檢查備機資料檔可接受 + 一致性硬閘門（Council DL-4）
 
 ```bash
 ssh mini1-ts 'ls -la ~/data/memory-hall/ | head -20'
 # 確認 mtime 接近最近一次成功 rsync（通常 ≤ 5–10 分鐘前，若主已掛則以最後成功時間為準）
 ```
+
+先做一份**不覆蓋原檔**的 snapshot（保留事故現場 + rollback point），再對兩庫跑 integrity check：
+
+```bash
+ssh mini1-ts 'cp -a ~/data/memory-hall ~/data/memory-hall.pre-promote-$(date +%Y%m%d%H%M)
+  sqlite3 ~/data/memory-hall/memory-hall.sqlite3 "PRAGMA integrity_check;"
+  sqlite3 ~/data/memory-hall/memory-hall-vectors.sqlite3 "PRAGMA integrity_check;"'
+```
+
+**任一結果非 `ok` → 停止促轉**，改用更早的 snapshot；不可猜測式修復（不用 `.recover` 硬拉）。
+理由：cron rsync 的來源是運行中的 SQLite，「rsync 成功」不保證跨檔交易一致（Council 2026-07-24，Codex/Gemini 獨立收斂）。
 
 ### 4. 啟動 mini1 memory-hall
 
@@ -53,6 +72,8 @@ ssh mini1-ts 'ls -la ~/data/memory-hall/ | head -20'
 ssh mini1-ts 'cd ~/GitHub/memory-hall && docker compose up -d'
 # 實際 path / compose 名稱以機上為準
 ```
+
+先只讀驗證（container log、`/v1/health`、list 讀既有資料），**不做測試寫入**；寫入等 Step 6 Maki 確認切換後，再寫一筆可辨識 test entry 並讀回。
 
 ### 5. Health check 備機
 
@@ -87,13 +108,22 @@ curl -s -m 5 -o /dev/null -w '%{http_code}\n' \
 
 此步涉及資料方向，**RED**：需 Maki 明確確認。
 
+## 停止條件（任一命中即中止促轉、保留現場 — Council DL-4）
+
+- 無法 fence mini2
+- cron 無法確認已停
+- 任一庫 `integrity_check` 非 ok
+- bind mount / compose 目錄指向不明
+- 資料基線明顯落後且不可接受
+
 ## 風險
 
 | 風險 | 緩解 |
 |------|------|
 | 未停 cron 導致覆寫 | Step 2 強制 |
+| rsync 快照跨檔不一致 | Step 3 integrity check 硬閘門 + snapshot（根治靠 DL-6 快照化備份，defer 中） |
 | RPO 內資料遺失 | 接受 cold RPO≈5min；重要寫入另有 session dir / 交接包 |
-| 雙主腦裂 | 禁止同時 live 兩台寫入 |
+| 雙主腦裂 | Step 1.5 fence + 禁止同時 live 兩台寫入 |
 | 文件未更新 | promote 當日更新 SHARED + quick-ref |
 
 ## 相關
