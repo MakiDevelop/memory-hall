@@ -2,7 +2,7 @@
 
 > 狀態：2026-07-24 Phase 1（R3 cold standby）+ Council DL-4 合併（fence / integrity gate / snapshot）  
 > 主（live）：mini2 `100.89.41.50:9100`  
-> 備（cold）：mini1 `100.122.171.74:9100` — **平時 container 停、不監聽**  
+> 備（cold）：mini1 `100.97.228.45:9100` — **平時 container 停、不監聽**  
 > 本檔為唯一正典；`docs/operations/promote-runbook.md` 已改為 pointer。
 
 ## 何時用
@@ -80,7 +80,7 @@ ssh mini1-ts 'cd ~/GitHub/memory-hall && docker compose up -d'
 ```bash
 curl -s -m 5 -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer $MH_API_TOKEN" \
-  "http://100.122.171.74:9100/v1/memory?limit=1"
+  "http://100.97.228.45:9100/v1/memory?limit=1"
 # 預期：200
 ```
 
@@ -90,7 +90,7 @@ curl -s -m 5 -o /dev/null -w '%{http_code}\n' \
 
 | 位置 | 改為 |
 |------|------|
-| `~/.amh/config.json` `store_path` | `http://100.122.171.74:9100` |
+| `~/.amh/config.json` `store_path` | `http://100.97.228.45:9100` |
 | skills / SHARED 文件主 IP | mini1（並標「臨時 promote」） |
 
 ### 7. 公告
