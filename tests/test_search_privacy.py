@@ -15,7 +15,6 @@ import pytest
 
 from tests.conftest import client_for_app
 
-
 BEARER_TOKEN = "test-bearer-token"
 HMAC_SECRET = "test-hmac-secret"
 

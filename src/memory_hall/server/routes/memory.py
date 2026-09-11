@@ -63,7 +63,8 @@ async def search_entries(
     result = await runtime.search_entries(tenant_id=request.state.tenant_id, payload=payload)
 
     _audit_log.info(
-        "search_privacy decision=%s principal=%s role=%s requested_agent_id=%s effective_agent_id=%s result_count=%d",
+        "search_privacy decision=%s principal=%s role=%s "
+        "requested_agent_id=%s effective_agent_id=%s result_count=%d",
         decision,
         principal.principal_id,
         principal.role,
