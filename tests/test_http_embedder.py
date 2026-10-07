@@ -8,6 +8,7 @@ import pytest
 
 import memory_hall.embedder.http_embedder as http_embedder_module
 from memory_hall.config import Settings
+from memory_hall.embedder.failover_embedder import FailoverEmbedder
 from memory_hall.embedder.http_embedder import HttpEmbedder
 from memory_hall.server.app import build_runtime
 
@@ -106,7 +107,9 @@ def test_build_runtime_uses_http_embedder(tmp_path: Path) -> None:
 
     runtime = build_runtime(settings=settings)
 
-    assert isinstance(runtime.embedder, HttpEmbedder)
-    assert runtime.embedder.base_url == "http://embedder.test:8790"
-    assert runtime.embedder.timeout_s == 8.0
+    assert isinstance(runtime.embedder, FailoverEmbedder)
+    assert runtime.embedder.health_snapshot()["embed_backends"] == [
+        {"index": 0, "state": "cooling_down"}
+    ]
+    assert runtime.embedder._shared.backends[0].embedder.timeout_s == 2.0
     assert runtime.embedder.dim == 8

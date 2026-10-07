@@ -357,3 +357,18 @@ memory-hall 은 여러 AI 에이전트(Claude / Codex / Gemini / 로컬 LLM / �
 **의도적으로 작게 유지** — decay 없음, topic tree 없음, 필수 MCP 경로 없음, 필수 auth 없음, enrichment worker 없음. memory-hall의 베팅: 엔진은 저장과 검색만, 메모리 구조 결정은 당신의 에이전트 스택이.
 
 </details>
+
+### Ordered HTTP embedding failover
+
+Set `MH_EMBEDDER_KIND=http` and `MH_EMBED_BASE_URLS` to a comma-separated list
+in priority order (DGX Spark → mini2 → mini1). Leave `MH_EMBED_BASE_URL` empty;
+setting both non-empty is a startup error. The legacy single URL remains supported.
+Each backend must expose `GET /health` with `model: "BAAI/bge-m3"` and
+`dimension: 1024` (or the configured model/dimension).
+
+Connection timeout defaults to 2 seconds; failed nodes cool down for 60 seconds.
+The primary is retried first after its cooldown. Incompatible models/dimensions
+are excluded until restart. `/v1/health` includes `embed_backends` and
+`last_embed_backend_index` (zero-based positions only; no backend URLs). All-down writes still persist as pending with HTTP 202.
+See [deployment settings](docs/deploy.md#ordered-embedding-failover) and the
+[ADR 0006 addendum](docs/adr/0006-http-embedder-embed-queue-isolation.md#2026-10-07-addendum-ordered-http-failover).
