@@ -811,14 +811,14 @@ class MemoryHallRuntime:
         return age_s >= self._health_cache_ttl_s
 
     def _record_health_error(self, component: str, exc: Exception) -> str:
-        message = f"{component}: {exc.__class__.__name__}: {exc}".strip()
         logger.error(
             "health sub-check failed component=%s error_class=%s error=%s",
             component,
             exc.__class__.__name__,
             exc,
         )
-        return message[:_MAX_EMBED_ERROR_LENGTH]
+        # Public health is unauthenticated; exception details belong only in logs.
+        return f"{component} unavailable"
 
     async def _checkpoint_wal_databases(self) -> None:
         busy, log_frames, checkpointed = await self.storage.checkpoint_wal(

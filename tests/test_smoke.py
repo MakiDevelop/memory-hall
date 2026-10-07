@@ -149,6 +149,51 @@ async def test_health_logs_subcheck_error_and_exposes_last_error(app_factory, ca
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("component", ["storage", "vector_store"])
+async def test_public_health_hides_storage_paths(
+    app_factory, monkeypatch, caplog, component
+) -> None:
+    app = app_factory()
+    error = "cannot open /private/internal/memory-hall.sqlite3"
+
+    def fail_healthcheck() -> None:
+        raise RuntimeError(error)
+
+    async def fail_async_healthcheck() -> None:
+        raise RuntimeError(error)
+
+    async with client_for_app(app) as client:
+        app.state.settings.api_token = "private-api-token"
+        app.state.settings.admin_token = "private-admin-token"
+        runtime = app.state.runtime
+        last_success_at = runtime._health_cache.last_success_at
+        monkeypatch.setattr(
+            getattr(runtime, component),
+            "healthcheck",
+            fail_async_healthcheck if component == "storage" else fail_healthcheck,
+        )
+        runtime._health_cache_ttl_s = 0.0
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            response = await client.get("/v1/health")
+
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["status"] == "degraded"
+        assert payload[component] == "degraded"
+        for other in {"storage", "vector_store", "embedder"} - {component}:
+            assert payload[other] == "ok"
+        assert runtime._health_cache.last_success_at == last_success_at
+        assert payload["last_error"] == f"{component} unavailable"
+        assert "/private/internal" not in response.text
+        assert "memory-hall.sqlite3" not in response.text
+        assert any(
+            f"component={component} error_class=RuntimeError error={error}" in record.message
+            for record in caplog.records
+        )
+
+
+@pytest.mark.asyncio
 async def test_wal_checkpoint_truncates_main_and_vector_wal(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     settings.wal_checkpoint_interval_s = 300.0

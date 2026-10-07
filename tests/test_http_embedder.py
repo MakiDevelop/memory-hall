@@ -109,7 +109,7 @@ def test_build_runtime_uses_http_embedder(tmp_path: Path) -> None:
 
     assert isinstance(runtime.embedder, FailoverEmbedder)
     assert runtime.embedder.health_snapshot()["embed_backends"] == [
-        {"url": "http://embedder.test:8790", "state": "cooling_down"}
+        {"index": 0, "state": "cooling_down"}
     ]
     assert runtime.embedder._shared.backends[0].embedder.timeout_s == 2.0
     assert runtime.embedder.dim == 8

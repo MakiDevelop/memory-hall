@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
@@ -84,7 +85,7 @@ def test_failover_and_cooldown(monkeypatch, failure, phase):
     assert embedder.embed("b") == [1, 2]
     assert seen == [("mini2.test", "/embed")]
     snapshot = embedder.health_snapshot()
-    assert snapshot["last_embed_backend"] == "http://mini2.test"
+    assert snapshot["last_embed_backend_index"] == 1
     expected = "mismatch" if phase == "/health" and failure == "dimension" else "cooling_down"
     assert snapshot["embed_backends"][0]["state"] == expected
 
@@ -104,12 +105,12 @@ def test_recovery_rechecks_primary_and_shared_timeout_view(monkeypatch):
     embedder = make_embedder()
     view = embedder.clone_with_timeout(3)
     assert view.embed("a") == [1, 2]
-    assert embedder.health_snapshot()["last_embed_backend"] == "http://mini2.test"
+    assert embedder.health_snapshot()["last_embed_backend_index"] == 1
     now[0] = 161
     seen.clear()
     assert embedder.embed("b") == [1, 2]
     assert seen == [("dgx.test", "/health"), ("dgx.test", "/embed")]
-    assert view.health_snapshot()["last_embed_backend"] == "http://dgx.test"
+    assert view.health_snapshot()["last_embed_backend_index"] == 0
 
 
 @pytest.mark.parametrize("field,value", [("model", "other-model"), ("dimension", 99)])
@@ -199,7 +200,7 @@ async def test_health_output_and_all_down_write_retry(monkeypatch, tmp_path):
     async with client_for_app(app) as client:
         health = await client.get("/v1/health")
         assert health.status_code == 503
-        assert health.json()["last_embed_backend"] is None
+        assert health.json()["last_embed_backend_index"] is None
         assert [item["state"] for item in health.json()["embed_backends"]] == ["cooling_down"] * 3
         assert "secret" not in health.text
         response = await client.post("/v1/memory/write", json={
@@ -232,7 +233,7 @@ async def test_health_success_reports_fallback_and_live_last_backend(monkeypatch
     async with client_for_app(app) as client:
         response = await client.get("/v1/health")
     assert response.status_code == 200
-    assert response.json()["last_embed_backend"] == "http://mini2.test"
+    assert response.json()["last_embed_backend_index"] == 1
     assert [item["state"] for item in response.json()["embed_backends"]] == [
         "mismatch", "healthy", "cooling_down",
     ]
@@ -294,7 +295,7 @@ def test_healthy_backend_failure_then_recovery_mismatch(monkeypatch, caplog):
                     if "backend=http://dgx.test " in record.message]
     assert primary_logs == ["healthy", "cooling_down", "mismatch"]
     assert seen.count(("dgx.test", "/health")) == 2
-    assert embedder.health_snapshot()["last_embed_backend"] == "http://mini2.test"
+    assert embedder.health_snapshot()["last_embed_backend_index"] == 1
 
 
 def test_4xx_preserves_status_error_without_fallback(monkeypatch):
@@ -421,7 +422,7 @@ def test_busy_probe_skipped_without_blocking_search(monkeypatch):
         try:
             assert probing.wait(timeout=2)
             assert embedder.clone_with_timeout(0.5).embed("search") == [1, 2]
-            assert embedder.health_snapshot()["last_embed_backend"] == "http://mini2.test"
+            assert embedder.health_snapshot()["last_embed_backend_index"] == 1
             assert probes.count("dgx.test") == 1
         finally:
             release.set()
@@ -454,3 +455,48 @@ def test_late_embed_success_does_not_clear_concurrent_failure(monkeypatch):
             release.set()
         assert slow.result(timeout=2) == [1, 2]
     assert embedder.health_snapshot()["embed_backends"][0]["state"] == "cooling_down"
+
+
+@pytest.mark.parametrize("mode", ["single", "failover", "direct"])
+@pytest.mark.parametrize("outcome", ["healthy", "fallback", "down"])
+async def test_public_health_hides_backend_addresses(monkeypatch, tmp_path, mode, outcome):
+    urls = ["http://100.89.41.50:18790", "http://mini.internal:28790",
+            "http://[fd00::1234]:38790"]
+
+    def handler(request):
+        if outcome == "down" or (outcome == "fallback" and request.url.host == "100.89.41.50"):
+            raise httpx.ConnectError(f"cannot connect to {request.url}", request=request)
+        return success(request)
+
+    install_mock_client(monkeypatch, handler)
+    settings = build_settings(tmp_path, dim=2)
+    settings.api_token = "private-api-token"
+    settings.admin_token = "private-admin-token"
+    settings.embedder_kind = "http"
+    if mode == "failover":
+        settings.embed_base_urls = ",".join(urls)
+    else:
+        settings.embed_base_url = urls[0]
+    embedder = HttpEmbedder(base_url=urls[0], dim=2) if mode == "direct" else None
+    app = create_app(settings=settings, embedder=embedder)
+    async with client_for_app(app) as client:
+        response = await client.get("/v1/health")  # No credentials, even with admin auth enabled.
+    healthy = outcome == "healthy" or (outcome == "fallback" and mode == "failover")
+    assert response.status_code == (200 if healthy else 503)
+    payload = response.json()
+    assert "http" not in response.text.lower()
+    assert not re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", response.text)
+    for url in urls:
+        parsed = httpx.URL(url)
+        assert parsed.host not in response.text
+        assert str(parsed.port) not in response.text
+    assert "last_embed_backend" not in payload
+    if mode == "direct":
+        assert payload["embed_backends"] == []
+        assert payload["last_embed_backend_index"] is None
+    else:
+        count = 3 if mode == "failover" else 1
+        assert [item["index"] for item in payload["embed_backends"]] == list(range(count))
+        assert all(set(item) == {"index", "state"} for item in payload["embed_backends"])
+        expected_last = (1 if outcome == "fallback" else 0) if healthy else None
+        assert payload["last_embed_backend_index"] == expected_last

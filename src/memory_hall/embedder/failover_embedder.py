@@ -68,10 +68,14 @@ class FailoverEmbedder:
         with self._shared.lock:
             return {
                 "embed_backends": [
-                    {"url": backend.embedder.base_url, "state": backend.state}
-                    for backend in self._shared.backends
+                    {"index": index, "state": backend.state}
+                    for index, backend in enumerate(self._shared.backends)
                 ],
-                "last_embed_backend": self._shared.last_backend,
+                "last_embed_backend_index": next(
+                    (index for index, backend in enumerate(self._shared.backends)
+                     if backend.embedder.base_url == self._shared.last_backend),
+                    None,
+                ),
             }
 
     def _transition(self, backend: _Backend, state: State) -> None:
