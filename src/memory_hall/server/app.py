@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from memory_hall.config import Settings
+from memory_hall.embedder.failover_embedder import FailoverEmbedder
 from memory_hall.embedder.http_embedder import HttpEmbedder
 from memory_hall.embedder.interface import Embedder
 from memory_hall.embedder.ollama_embedder import OllamaEmbedder
@@ -414,6 +415,10 @@ class MemoryHallRuntime:
     async def health(self) -> HealthResponse:
         if self._health_cache_stale():
             await self._refresh_health_cache()
+        if isinstance(self.embedder, FailoverEmbedder):
+            return HealthResponse.model_validate(
+                self._health_cache.model_dump() | self.embedder.health_snapshot()
+            )
         return self._health_cache
 
     async def _refresh_health_cache(self) -> None:
@@ -784,12 +789,12 @@ class MemoryHallRuntime:
         return message[:_MAX_EMBED_ERROR_LENGTH]
 
     def _embed_timeout_s(self) -> float:
-        if isinstance(self.embedder, HttpEmbedder):
+        if isinstance(self.embedder, (HttpEmbedder, FailoverEmbedder)):
             return self.embedder.timeout_s
         return self.settings.embed_timeout_s
 
     def _embedder_for_timeout(self, timeout_s: float) -> Embedder:
-        if isinstance(self.embedder, HttpEmbedder):
+        if isinstance(self.embedder, (HttpEmbedder, FailoverEmbedder)):
             return self.embedder.clone_with_timeout(timeout_s)
         return self.embedder
 
@@ -964,12 +969,19 @@ def build_runtime(
     embed_dim = active_settings.embed_dim or active_settings.vector_dim
     if embedder is None:
         if active_settings.embedder_kind == "http":
-            if not active_settings.embed_base_url:
-                raise ValueError("embed_base_url is required when embedder_kind='http'")
-            active_embedder = HttpEmbedder(
-                base_url=active_settings.embed_base_url,
-                timeout_s=max(active_settings.embed_timeout_s, 8.0),
-                dim=embed_dim,
+            active_embedder = FailoverEmbedder(
+                [
+                    HttpEmbedder(
+                        base_url=url,
+                        timeout_s=active_settings.embed_timeout_s,
+                        connect_timeout_s=active_settings.embed_connect_timeout_s,
+                        dim=embed_dim,
+                    )
+                    for url in active_settings.http_embed_urls
+                ],
+                model=active_settings.embed_model,
+                cooldown_s=active_settings.embed_cooldown_s,
+                mismatch_recheck_s=active_settings.embed_mismatch_recheck_s,
             )
         else:
             active_embedder = OllamaEmbedder(

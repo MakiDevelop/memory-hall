@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
     search_embed_timeout_s: float = 2.0
     embedder_kind: Literal["ollama", "http"] = "ollama"
     embed_base_url: str | None = None
+    embed_base_urls: str = ""
+    embed_model: str = "BAAI/bge-m3"
+    embed_connect_timeout_s: float = Field(default=2.0, gt=0)
+    embed_cooldown_s: float = Field(default=60.0, gt=0)
+    embed_mismatch_recheck_s: float = Field(default=600.0, gt=0)
     embed_dim: int | None = None
     vector_dim: int = 1024
     default_tenant_id: str = "default"
@@ -68,6 +74,34 @@ class Settings(BaseSettings):
             raise ValueError("admin_token requires api_token (would fail-open on non-admin paths)")
         if self.admin_token and self.api_token and self.admin_token == self.api_token:
             raise ValueError("admin_token must differ from api_token")
+        return self
+
+    @property
+    def http_embed_urls(self) -> list[str]:
+        raw = self.embed_base_urls or self.embed_base_url or ""
+        return [url.strip().rstrip("/") for url in raw.split(",") if url.strip()]
+
+    @model_validator(mode="after")
+    def _validate_http_embedder(self) -> Settings:
+        if self.embedder_kind != "http":
+            return self
+        self.embed_base_urls = self.embed_base_urls.strip()
+        self.embed_base_url = (self.embed_base_url or "").strip()
+        if self.embed_base_urls and self.embed_base_url:
+            raise ValueError("set only one of MH_EMBED_BASE_URLS and MH_EMBED_BASE_URL")
+        if not self.http_embed_urls:
+            raise ValueError("MH_EMBED_BASE_URLS or MH_EMBED_BASE_URL is required for http")
+        for url in self.http_embed_urls:
+            parsed = urlsplit(url)
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                    or parsed.username or parsed.password or parsed.query or parsed.fragment):
+                raise ValueError(
+                    "embedding URLs require HTTP(S), without credentials/query/fragment"
+                )
+        if self.embed_dim != self.vector_dim:
+            raise ValueError("embed_dim and vector_dim must match")
+        if self.embed_timeout_s <= 0 or not self.embed_model.strip():
+            raise ValueError("HTTP embedding timeout and model must be non-empty/positive")
         return self
 
     def prepare_paths(self) -> None:

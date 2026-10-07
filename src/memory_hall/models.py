@@ -249,11 +249,18 @@ class AuditResponse(BaseModel):
     content_hash_collisions: int
 
 
+class EmbedBackendHealth(BaseModel):
+    url: str
+    state: Literal["healthy", "cooling_down", "mismatch"]
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     storage: str
     vector_store: str
     embedder: str
+    embed_backends: list[EmbedBackendHealth] = Field(default_factory=list)
+    last_embed_backend: str | None = None
     last_success_at: datetime | None = None
     last_error: str | None = None
 
