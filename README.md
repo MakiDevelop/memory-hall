@@ -369,6 +369,6 @@ Each backend must expose `GET /health` with `model: "BAAI/bge-m3"` and
 Connection timeout defaults to 2 seconds; failed nodes cool down for 60 seconds.
 The primary is retried first after its cooldown. Incompatible models/dimensions
 are excluded until restart. `/v1/health` includes `embed_backends` and
-`last_embed_backend`. All-down writes still persist as pending with HTTP 202.
+`last_embed_backend_index` (zero-based positions only; no backend URLs). All-down writes still persist as pending with HTTP 202.
 See [deployment settings](docs/deploy.md#ordered-embedding-failover) and the
 [ADR 0006 addendum](docs/adr/0006-http-embedder-embed-queue-isolation.md#2026-10-07-addendum-ordered-http-failover).

@@ -98,7 +98,7 @@ protects transitions; no lock is held during embed HTTP calls, so write/search
 embeddings run concurrently. Generation checks prevent stale failures from
 overwriting newer recovery state; late successes never clear a failure.
 
-Expose backend states and last serving URL through health. All-down raises the
+Expose backend states and last serving index through health. All-down raises the
 underlying exception class, preserving SQLite-first pending writes and existing
 retry columns/failed-at-five behavior. The outer write budget must accommodate
 multiple HTTP attempts; search and health keep their existing total budgets.
@@ -108,3 +108,14 @@ arithmetic, initial state semantics, incompatibility recovery and limitations.
 MockTransport tests cover ordering, failure classes, cooldown/recovery, health
 and response validation, configuration, observability, and all-down write/retry
 behavior without contacting actual embedding services.
+
+
+### 2026-10-07 security addendum: public health redaction
+
+The unauthenticated `/v1/health` exposes only zero-based configured positions:
+`embed_backends: [{"index": 0, "state": "healthy"}]` and
+`last_embed_backend_index` (null until a successful embedding). This replaces
+the URL-bearing `url` and `last_embed_backend` fields for both single-backend
+and failover HTTP configurations. Backend addresses remain in state-change
+server logs. Existing admin routes provide reindex and memory audit, not backend
+status; no new admin endpoint is introduced. Failover and auth behavior are unchanged.

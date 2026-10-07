@@ -203,8 +203,11 @@ their existing total budgets (`MH_SEARCH_EMBED_TIMEOUT_S`,
 Synchronous HTTP work already in progress cannot be cancelled by asyncio's outer
 timeout; HTTP phase timeouts bound it, and no new attempt begins after the deadline.
 
-`/v1/health` adds `embed_backends: [{"url": "...", "state": "..."}]` and
-`last_embed_backend` (null before success; includes health/search embeddings).
+The public `/v1/health` adds `embed_backends: [{"index": 0, "state": "..."}]` and
+`last_embed_backend_index` (null before success; includes health/search embeddings).
+Indices are zero-based positions in configured URL order. Hosts, IPs, ports and
+full URLs are never included in these fields. There is no admin backend-status
+endpoint; operators can find full URLs in existing state-change server logs.
 States are `healthy`, `cooling_down`, `mismatch`. Not-yet-probed nodes initially
 show `cooling_down` but are immediately eligible. Snapshots do not probe the
 network; aggregate health retains its existing cache. Backend state transitions
