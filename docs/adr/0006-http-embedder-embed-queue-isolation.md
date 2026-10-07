@@ -78,3 +78,33 @@ Rejected for now: requires shipping ~2GB of bge-m3 weights into the memory-hall 
 - `tests/test_http_embedder.py`, `tests/test_smoke.py` — coverage including dim mismatch, error propagation, empty input, and the new health-probe timeout behavior.
 
 Total: +249 / -9, 7 files. 12 new/updated tests pass; existing test suite unaffected.
+
+## 2026-10-07 addendum: ordered HTTP failover
+
+This addendum supersedes the original multi-embedder failover non-goal for HTTP
+backends only. `FailoverEmbedder` wraps an ordered list of `HttpEmbedder`s;
+`MH_EMBED_BASE_URLS` selects the list and legacy `MH_EMBED_BASE_URL` selects one.
+Both set is rejected. Ollama behavior is unchanged.
+
+Before first use and after cooldown, validate `/health` model and dimension.
+Explicit incompatibility is excluded until a matching lazy re-probe after
+`MH_EMBED_MISMATCH_RECHECK_S` (default 600 seconds); transient failures cool down
+for 60 seconds and lazily retry with primary preference. Connect timeout defaults
+to 2 seconds, independent of read timeout. Per-response vector checks remain.
+No dependency or background thread is added. Timeout views share backend state
+and per-backend single-flight probe locks. Requests wait at most 50 ms within
+their deadline for a probe, then skip that backend if busy. A small state lock
+protects transitions; no lock is held during embed HTTP calls, so write/search
+embeddings run concurrently. Generation checks prevent stale failures from
+overwriting newer recovery state; late successes never clear a failure.
+
+Expose backend states and last serving URL through health. All-down raises the
+underlying exception class, preserving SQLite-first pending writes and existing
+retry columns/failed-at-five behavior. The outer write budget must accommodate
+multiple HTTP attempts; search and health keep their existing total budgets.
+See [deployment details](../deploy.md#ordered-embedding-failover) for timeout
+arithmetic, initial state semantics, incompatibility recovery and limitations.
+
+MockTransport tests cover ordering, failure classes, cooldown/recovery, health
+and response validation, configuration, observability, and all-down write/retry
+behavior without contacting actual embedding services.

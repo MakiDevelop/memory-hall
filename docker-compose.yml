@@ -19,6 +19,11 @@ services:
       # Embedder selection: "ollama" (default, backward compat) or "http" (dedicated bge-m3 HTTP service)
       MH_EMBEDDER_KIND: ${MH_EMBEDDER_KIND:-ollama}
       MH_EMBED_BASE_URL: ${MH_EMBED_BASE_URL:-}
+      MH_EMBED_BASE_URLS: ${MH_EMBED_BASE_URLS:-}
+      MH_EMBED_MODEL: ${MH_EMBED_MODEL:-BAAI/bge-m3}
+      MH_EMBED_CONNECT_TIMEOUT_S: ${MH_EMBED_CONNECT_TIMEOUT_S:-2.0}
+      MH_EMBED_COOLDOWN_S: ${MH_EMBED_COOLDOWN_S:-60.0}
+      MH_EMBED_TIMEOUT_S: ${MH_EMBED_TIMEOUT_S:-8.0}
       MH_HEALTH_EMBED_TIMEOUT_S: ${MH_HEALTH_EMBED_TIMEOUT_S:-3.0}
       # Auth: leave empty for no-auth (dev/standalone). Set for production.
       MH_API_TOKEN: ${MH_API_TOKEN:-}
