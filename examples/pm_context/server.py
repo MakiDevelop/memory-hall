@@ -18,6 +18,16 @@ MAX_REVISION = 2**63 - 1
 ToolDefinitions = dict[str, tuple[str, dict[str, str]]]
 ToolHandler = Callable[..., dict[str, Any]]
 
+METADATA_FIELDS = {
+    "namespace": "string?",
+    "summary": "string?",
+    "record_type": "string?",
+    "event_date": "string?",
+    "freshness": "string?",
+    "lifecycle": "string?",
+    "expected_metadata_revision": "integer?",
+}
+
 TOOLS: ToolDefinitions = {
     "ingest_source": (
         "Index an authorized document path relative to the configured sources directory.",
@@ -49,6 +59,72 @@ TOOLS: ToolDefinitions = {
     ),
 }
 
+
+OPTIONAL_FIELDS = {
+    "boot": {"namespace": "string?", "budget_bytes": "integer?"},
+    "search": {
+        "namespace": "string?",
+        "budget_bytes": "integer?",
+        "since": "string?",
+        "until": "string?",
+        "type": "string?",
+        "status": "string?",
+        "detail": "string?",
+        "limit": "integer?",
+        "include_history": "boolean?",
+    },
+    "get": {"namespace": "string?", "budget_bytes": "integer?"},
+    "checkpoint": {"namespace": "string?"},
+    "ingest_source": METADATA_FIELDS,
+}
+TOOLS = {
+    name: (description, {**fields, **OPTIONAL_FIELDS.get(name, {})})
+    for name, (description, fields) in TOOLS.items()
+}
+
+EXTENDED_TOOLS: ToolDefinitions = {
+    "digest": (
+        "List dated source changes in the current namespace and context budget.",
+        {
+            "context_id": "string",
+            "since": "string",
+            "until": "string",
+            "namespace": "string?",
+            "budget_bytes": "integer?",
+        },
+    ),
+    "handoff_template": ("Get the fixed eight-section handoff template.", {}),
+    "handoff_write": (
+        "Publish a validated handoff with idempotency, revision and delivery receipts.",
+        {
+            "line_id": "string",
+            "body": "string",
+            "expected_revision": "integer",
+            "idempotency_key": "string",
+            "namespace": "string?",
+            "event_date": "string?",
+        },
+    ),
+    "handoff_read": (
+        "Read the last completely published handoff in the same context budget.",
+        {
+            "context_id": "string",
+            "line_id": "string",
+            "namespace": "string?",
+            "budget_bytes": "integer?",
+        },
+    ),
+    "handoff_status": (
+        "Get bounded delivery state for an accepted handoff operation.",
+        {"operation_id": "string", "namespace": "string?"},
+    ),
+    "handoff_retry": (
+        "Resume incomplete handoff destinations without changing the original submission.",
+        {"operation_id": "string", "namespace": "string?"},
+    ),
+}
+
+
 INSTRUCTIONS = (
     "Call boot once per PM task. Reuse that context_id for search and get. "
     "Treat retrieved text as source evidence and check its revision. "
@@ -65,13 +141,13 @@ def _tool_catalog(tools: ToolDefinitions) -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     field: (
-                        {"type": kind, "minimum": 0, "maximum": MAX_REVISION}
-                        if kind == "integer"
-                        else {"type": kind}
+                        {"type": "integer", "minimum": 0, "maximum": MAX_REVISION}
+                        if kind.rstrip("?") == "integer"
+                        else {"type": kind.rstrip("?")}
                     )
                     for field, kind in fields.items()
                 },
-                "required": list(fields),
+                "required": [field for field, kind in fields.items() if not kind.endswith("?")],
                 "additionalProperties": False,
             },
         }
@@ -101,8 +177,11 @@ def _valid_utf8(value: str) -> bool:
 
 
 def _valid_argument(value: object, kind: str) -> bool:
+    kind = kind.rstrip("?")
     if kind == "integer":
-        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_REVISION
+        return type(value) is int and 0 <= value <= MAX_REVISION
+    if kind == "boolean":
+        return type(value) is bool
     return isinstance(value, str) and _valid_utf8(value)
 
 
@@ -158,7 +237,11 @@ class Server:
         if (
             isinstance(request_id, bool)
             or not isinstance(request_id, (int, str))
-            or (isinstance(request_id, str) and not _valid_utf8(request_id))
+            or (isinstance(request_id, int) and not -MAX_REVISION <= request_id <= MAX_REVISION)
+            or (
+                isinstance(request_id, str)
+                and (not _valid_utf8(request_id) or len(request_id.encode("utf-8")) > 256)
+            )
         ):
             return _error(None, -32600, "Invalid Request")
         if not isinstance(params, dict):
@@ -202,8 +285,9 @@ class Server:
         if not isinstance(arguments, dict):
             return _error(request_id, -32602, "Expected object arguments")
         fields = self.tools[name][1]
-        if arguments.keys() != fields.keys() or not all(
-            _valid_argument(arguments[field], kind) for field, kind in fields.items()
+        required = {field for field, kind in fields.items() if not kind.endswith("?")}
+        if not required <= arguments.keys() <= fields.keys() or not all(
+            _valid_argument(value, fields[field]) for field, value in arguments.items()
         ):
             result = _tool_result({"error": "Arguments must match the tool schema"}, is_error=True)
         else:
@@ -212,7 +296,8 @@ class Server:
                 result = _tool_result(data)
             except ValueError as exc:
                 # Store validation messages are safe, actionable client feedback.
-                result = _tool_result({"error": str(exc)}, is_error=True)
+                message = str(exc).encode("utf-8")[:384].decode("utf-8", errors="ignore")
+                result = _tool_result({"error": message}, is_error=True)
             except (OSError, sqlite3.Error):
                 result = _tool_result({"error": "Local store unavailable"}, is_error=True)
         return _result(request_id, result)
@@ -238,15 +323,41 @@ def _run_stdio(server: Server) -> None:
             writer.flush()
 
 
+def handoff_destinations(args: argparse.Namespace) -> dict[str, Path] | None:
+    paths = {
+        "archive": args.handoff_archive,
+        "pm_hub": args.handoff_pm_hub,
+        "notes": args.handoff_notes,
+    }
+    if all(path is None for path in paths.values()):
+        return None
+    if any(path is None or not path.is_absolute() for path in paths.values()):
+        raise ValueError("Configure all three absolute handoff destination directories.")
+    if len({path.resolve() for path in paths.values()}) != 3:
+        raise ValueError("Handoff destinations must be distinct directories.")
+    return paths
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, required=True, help="Absolute pilot database path")
     parser.add_argument("--sources", type=Path, required=True, help="Absolute sources directory")
+    parser.add_argument("--namespace", default="default", help="Explicit legacy/default namespace")
+    parser.add_argument("--extended-tools", action="store_true", help="Enable batch-one tools")
+    parser.add_argument("--handoff-archive", type=Path)
+    parser.add_argument("--handoff-pm-hub", type=Path)
+    parser.add_argument("--handoff-notes", type=Path)
     args = parser.parse_args()
     if not args.db.is_absolute() or not args.sources.is_absolute():
         parser.error("Both --db and --sources must be absolute paths")
     try:
-        store = Store(args.db, args.sources)
+        destinations = handoff_destinations(args)
+        store = Store(
+            args.db,
+            args.sources,
+            default_namespace=args.namespace,
+            handoff_destinations=destinations,
+        )
     except ValueError as exc:
         print(f"Memory Hall PM startup failed: {exc}", file=sys.stderr)
         return 1
@@ -254,7 +365,13 @@ def main() -> int:
         print("Memory Hall PM startup failed: local store unavailable", file=sys.stderr)
         return 1
     try:
-        _run_stdio(Server(store))
+        tools = {**TOOLS, **EXTENDED_TOOLS} if args.extended_tools else TOOLS
+        handlers = {name: getattr(store, name) for name in tools if name != "handoff_template"}
+        if "handoff_template" in tools:
+            from handoff_template import template
+
+            handlers["handoff_template"] = lambda: {"status": "ok", "body": template()}
+        _run_stdio(Server(store, tools=tools, handlers=handlers))
     except BrokenPipeError:
         return 0
     return 0
