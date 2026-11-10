@@ -51,6 +51,28 @@ Every tool data call receives the verified actor from HTTP middleware; clients c
 
 Unknown or unauthorized tools return a JSON-RPC error even when the HTTP transport is 200. Validation failures return MCP `isError`; neither is a successful write. Tests assert refusal **and unchanged business state**. `agent_writer` can write checkpoint/handoff and proposed decision/requirement sources. `pm` can import active ones. The legacy `write` role retains progress-writing capability; publishing active decisions requires an explicitly configured `pm` role. This code does not create or authorize any live principal.
 
+The `pm` field grants a machine credential the capability to publish active records. It does not record or require human confirmation for each decision. A separate human confirmer, confirmation evidence and full decision workflow remain batch 2; do not describe them as enforced by this role field.
+
+### Registry operations
+
+Credential changes require the project owner's authorization. This is an operating procedure, not permission to change a live registry.
+
+1. Prepare a complete replacement in a private temporary file **in the destination directory**, on the same filesystem. Keep the existing live file intact while preparing it. Use the intended service owner and private permissions; a replacement inherits the temporary file's metadata, not necessarily the old file's.
+2. Before publication, validate UTF-8, the configured size limit, JSON with duplicate-key rejection, and the complete principal schema/default namespace. The service's `_unique_object` and `_parse_principals` define those checks. A generic JSON syntax check alone does not validate roles, token digests or scopes. Do not print token values in validation output.
+3. Fully write and close the validated file, then atomically rename/replace it at the configured registry path. On the same filesystem, readers obtain the old complete file or the new complete file. If crash durability is required, also sync the file and directory using the platform's approved procedure; atomic visibility alone is not a durability guarantee.
+4. Never use an in-place truncate/write against the live path. An incomplete, invalid or unavailable registry causes 503 for requests, including existing sessions; this is intentional fail-closed behavior, not successful revocation evidence.
+5. Verify the approved remaining identities still work, revoked tokens receive 401, and changed role/scope identities cannot reuse old sessions. The usual old-session result after a principal change is 404; a change detected while waiting for the session lock can return 401. Reinitialize with the currently authorized identity. Do not treat a 503 as a passing 401 check.
+
+Preserve an approved previous version for recovery without restoring revoked credentials by accident. Follow the same validate-and-replace procedure for any authorized recovery. This batch does not install a registry update utility or change any live file.
+
+### Session capacity limits
+
+The current service permits 128 active HTTP sessions **globally**, not per principal. An authenticated client can occupy the shared capacity by repeatedly initializing. At capacity, new initialize requests receive 503; already-established sessions are not rejected by this capacity check alone. Multiple failed tool calls inside one session do not themselves create additional sessions.
+
+There is already a one-hour idle expiry: subsequent authenticated requests opportunistically remove expired sessions that are not locked, and a valid session DELETE releases its slot. There is no independent periodic sweeper or per-principal quota. A client can renew its sessions by sending requests; expiry therefore does not provide fair capacity for other actors. Invalidating credentials does not by itself immediately reclaim every stored session slot.
+
+Per-actor quotas, bounded error retries and reclaiming unusable sessions are follow-up proposals. Acceptance should demonstrate that actor A reaching its own allowance does not prevent actor B from initializing, that expiry/DELETE/revocation reclaim slots as specified, and that malformed-request loops cannot indefinitely consume shared capacity. Thresholds and rollout are not selected or implemented by this document.
+
 ## Data and version semantics
 
 | Concept | Representation |
@@ -101,6 +123,33 @@ The archive receipt includes a file readback in addition to the SQLite BLOB. All
 ## Safety and migration boundary
 
 Raw content and metadata strings are scanned before indexing, model summarization or replication. Findings expose category and line only. Fixtures cover API-key formats, password assignments, email, Taiwan phone/ID and quotation text, with SHA false-positive cases. This finite scanner cannot guarantee detection of every secret or PII. No self-service bypass exists. The separately approved SHA/operation-bound exception workflow is not implemented in batch 1; rejected material must be redacted or await that workflow.
+
+The quotation rule is intentionally broad: a quotation keyword followed by a digit on the same line within its bounded window can flag a percentage, date or discussion about the scanner. A quotation hit is a review signal, not proof of a real price; zero findings is not authorization to ingest. File version, approved data domain and source provenance must still be checked. Do not weaken the writer's scan gate just to make an ambiguous document pass.
+
+For a local **non-writing preview**, the existing pure `safety.scan()` function can be used from the repository root. This example reads only the file explicitly supplied by the operator, bounds input like an import, and prints SHA plus category/line findings. It does not index, summarize, upload or grant an exception. It is not a deployed MCP/CLI preflight tool.
+
+```sh
+python -B - /absolute/approved-document.md <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "examples/pm_context")
+from safety import scan
+
+with Path(sys.argv[1]).open("rb") as handle:
+    data = handle.read(2 * 1024 * 1024 + 1)
+if len(data) > 2 * 1024 * 1024:
+    raise SystemExit("Input exceeds the import size limit.")
+findings = scan(data.decode("utf-8-sig"))
+print(json.dumps({"source_sha256": hashlib.sha256(data).hexdigest(),
+                  "findings": findings, "stored": False,
+                  "authorization_assessed": False}, ensure_ascii=False))
+PY
+```
+
+A formal authenticated preflight endpoint remains follow-up work. It must share the write scanner's rules/version and raw-metadata coverage, report a source SHA and safe locations, and leave source generation, checkpoints, receipts and indexes unchanged. Reviewing a false positive or a clean preview is separate from authorizing a write.
 
 Opening a legacy database with the new Store performs a transactional additive migration to `pm_*` tables and validates preserved values. Legacy tables remain. Original source/section IDs, SHA, checkpoint revisions and receipts are retained in the configured default namespace. Old unbound contexts cannot become remote authenticated contexts. Database application ID changes from 1296577329 to 1296577330, so an old binary refuses the migrated file rather than writing frozen legacy tables. Default namespace and source root remain bound to the database.
 

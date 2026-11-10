@@ -37,7 +37,11 @@ python examples/pm_context/http_server.py \
 
 The server binds to `127.0.0.1`. A separately approved HTTPS proxy can provide private-network access. Each principals entry is keyed by actor and contains `role` and `token_sha256` (the SHA-256 digest of a high-entropy bearer token). Keep credential values and registry files outside source control. A file-backed registry is validated on every HTTP request; an invalid or unavailable file fails closed with 503. Removal of a credential rejects its next request, including requests on existing sessions. An in-memory registry supplied by an embedding test is static.
 
+Update a file-backed registry by validating a complete private temporary file in the same directory, then atomically replacing the destination. Do not truncate or rewrite the live file in place: readers can observe incomplete JSON and fail closed with 503. Preserve private ownership and permissions on the replacement. See [the registry operations procedure](BATCH1.md#registry-operations) for validation and post-checks; this documentation does not authorize a credential change.
+
 Every HTTP request supplies bearer authentication. HTTP sessions and contexts are actor-bound; contexts also bind namespace and source generation. Roles are `reader`, `agent_writer`, and `pm`; legacy `read`/`write` remain accepted. Reader tools include `boot`, `search`, `get`, and `source_status`. Writers additionally receive `ingest_text` and `checkpoint`. With `--extended-tools`, readers also receive digest/template/read/status tools and writers receive handoff write/retry. Agent writers can publish progress and proposals; active decision/requirement imports require the PM role. A separate human confirmer and decision-chain workflow remain batch 2. Unauthorized writes are rejected with JSON-RPC errors; inspect response bodies, not HTTP status alone.
+
+`pm` is a credential capability, not evidence that a human approved an individual decision. Human confirmation is not mechanically enforced in this batch. Session capacity is also shared globally; a per-principal quota is not implemented. See the capacity limits in BATCH1.md before interpreting private connectivity as isolation from a malfunctioning authorized client.
 
 ## Tool arguments
 
