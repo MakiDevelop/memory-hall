@@ -137,6 +137,53 @@ class SchemaErrorTests(unittest.TestCase):
         self.assertEqual(result["wrong_type"], {"task_id": "expected string"})
 
 
+class RepeatGuardBoundTests(unittest.TestCase):
+    def test_memory_is_bounded_and_existing_key_is_not_self_evicted(self):
+        guard = RepeatGuard(threshold=3, window_seconds=600, max_keys=4, clock=lambda: 0.0)
+        for index in range(4):
+            guard.record(("a", None, "boot", str(index)))
+        self.assertEqual(guard.record(("a", None, "boot", "0")), 2)
+        self.assertEqual(guard.record(("a", None, "boot", "0")), 3)
+        for index in range(100):
+            guard.record(("a", None, "boot", f"new-{index}"))
+        self.assertLessEqual(len(guard._counts), 4)
+
+    def test_expired_keys_are_pruned_on_every_record(self):
+        now = [0.0]
+        guard = RepeatGuard(threshold=3, window_seconds=10, max_keys=100, clock=lambda: now[0])
+        for index in range(50):
+            guard.record(("a", None, "boot", str(index)))
+        now[0] = 100.0
+        guard.record(("a", None, "boot", "fresh"))
+        self.assertEqual(len(guard._counts), 1)
+
+    def test_long_names_do_not_grow_keys_or_responses(self):
+        guard = RepeatGuard()
+        h = Harness(self, guard=guard)
+        _, session = h.initialize("a")
+        long_name = "x" * 10_000
+        result = h.call("a", session, "boot", {"task_id": "t", long_name: "v"})
+        self.assertEqual(result["unknown"], ["x" * 64])
+        (key,) = guard._counts
+        self.assertTrue(all(len(str(part)) <= 64 for part in key))
+
+    def test_unknown_tool_stop_is_a_boolean(self):
+        h = Harness(self)
+        _, session = h.initialize("a")
+        for attempt in range(1, 4):
+            response = h.client.post(
+                "/mcp",
+                headers=h.headers("a", session),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": attempt,
+                    "method": "tools/call",
+                    "params": {"name": "nope", "arguments": {}},
+                },
+            ).json()
+            self.assertIs(response["error"]["data"]["stop_retrying"], attempt >= 3)
+
+
 class SessionQuotaTests(unittest.TestCase):
     def test_one_identity_cannot_starve_another(self):
         h = Harness(self, max_sessions_per_principal=2)
@@ -148,6 +195,26 @@ class SessionQuotaTests(unittest.TestCase):
         # DELETE returns the slot.
         h.client.delete("/mcp", headers=h.headers("a", sessions[0]))
         self.assertEqual(h.initialize("a")[0].status_code, 200)
+
+    def test_rotated_token_hash_reclaims_old_sessions(self):
+        h = Harness(self, max_sessions_per_principal=1)
+        _, old = h.initialize("a")
+        h.principals["a"] = {
+            "token_sha256": hashlib.sha256(b"rotated-token").hexdigest(),
+            "role": "agent_writer",
+        }
+        response = h.client.post(
+            "/mcp",
+            headers={"Authorization": "Bearer rotated-token"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": PROTOCOL},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(old)
 
     def test_idle_and_revoked_sessions_free_quota(self):
         import http_server
@@ -199,6 +266,9 @@ class QuotationRuleTests(unittest.TestCase):
             "報價規則 v2 於 11/9 定案",
             "quote the 3 items from sprint 12",
             "底價機制 K552 還沒定",
+            "報價流程 2026-11-09 定案",
+            "報價規則於 2026年 改版",
+            "報價表 v1.2.3 已更新",
         ):
             with self.subTest(text=text):
                 self.assertEqual(scan(text), [])
@@ -212,6 +282,12 @@ class QuotationRuleTests(unittest.TestCase):
             "報價 120000",
             "unit price $50",
             "底價 80000 元",
+            "報價12000",
+            "報價為5000台幣",
+            "報價 500 台幣",
+            "報價5千",
+            "報價 NTD 300",
+            "報價：3億",
         ):
             with self.subTest(text=text):
                 self.assertIn("quotation", {item["category"] for item in scan(text)})
@@ -258,6 +334,16 @@ class CliEdgeTests(unittest.TestCase):
         self.assertTrue(client.http._trust_env)
         with self.assertRaises(ValueError):
             self._client({"MEMORY_HALL_31_CF_ACCESS_CLIENT_ID": "only-id"})
+
+    def test_env_proxy_is_never_used_for_loopback_http(self):
+        import os
+        from unittest import mock
+
+        from memory_hall.cli.pm import Client
+
+        with mock.patch.dict(os.environ, {"MEMORY_HALL_31_USE_ENV_PROXY": "1"}):
+            client = Client("http://127.0.0.1:8766/mcp", "synthetic-token")
+        self.assertFalse(client.http._trust_env)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import re
 import unicodedata
 from bisect import bisect_right
 
-RULE_VERSION = "safety-2"
+RULE_VERSION = "safety-3"
 
 # These checks intentionally report locations without reproducing matched values.
 _PATTERNS = (
@@ -56,13 +56,17 @@ _PATTERNS = (
         re.compile(
             r"(?:報價|报价|底價|底价|合約金額|合同金额|"
             r"\b(?:quotation|quote|quoted price|unit price)\b)"
-            # An amount: a currency marker before digits, digits followed by a currency
-            # unit, a thousands-separated number, or a bare number of four or more digits.
+            # An amount: a currency marker before digits, digits followed by a currency or
+            # magnitude unit, a thousands-separated number, or a bare number of four or more
+            # digits that is not part of a date, version or identifier. ASCII-only boundaries
+            # so a number written right after a CJK character still counts.
             r"[^\n\r]{0,60}?(?:"
-            r"(?:NT\$|TWD|USD|新台幣|台幣|人民幣|[$￥¥])\s*\d"
-            r"|\d[\d,.]*\s*(?:元|萬|万|塊|NTD|TWD|USD|k\b)"
-            r"|(?<![\w.])\d{1,3}(?:,\d{3})+(?![\w])"
-            r"|(?<![\w.,])\d{4,}(?![\w])"
+            r"(?:(?<![A-Za-z])(?:NT\$|NTD|NT|TWD|USD|RMB|CNY)"
+            r"|新台幣|新臺幣|台幣|臺幣|人民幣|美金|美元|[$￥¥])\s*\d"
+            r"|\d[\d,.]*\s*(?:元|圓|萬|万|千|仟|億|亿|塊|"
+            r"新台幣|新臺幣|台幣|臺幣|人民幣|美金|美元|(?:NTD|TWD|USD|RMB|k)(?![A-Za-z]))"
+            r"|(?<![A-Za-z0-9_.])\d{1,3}(?:,\d{3})+(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_.,/:-])\d{4,}(?![A-Za-z0-9_.,/:年-])"
             r")",
             re.I,
         ),

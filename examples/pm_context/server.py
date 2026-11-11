@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import sys
@@ -161,15 +162,18 @@ class RepeatGuard:
         self._counts: dict[tuple, list[float]] = {}
 
     def record(self, key: tuple) -> int:
+        """Count one error for a bounded key; least recently seen keys are evicted first."""
         now = self.clock()
-        if len(self._counts) >= self.max_keys:
-            for stale in [k for k, (_, seen) in self._counts.items() if now - seen > self.window]:
-                del self._counts[stale]
-            while len(self._counts) >= self.max_keys:
-                del self._counts[next(iter(self._counts))]
-        entry = self._counts.get(key)
-        if entry is None or now - entry[1] > self.window:
-            entry = [0, now]
+        entry = self._counts.pop(key, None)
+        if entry is not None and now - entry[1] > self.window:
+            entry = None
+        # Insertion order equals last-seen order, so expired keys sit at the front.
+        while self._counts:
+            oldest = next(iter(self._counts))
+            if now - self._counts[oldest][1] <= self.window and len(self._counts) < self.max_keys:
+                break
+            del self._counts[oldest]
+        entry = entry or [0, now]
         entry[0] += 1
         entry[1] = now
         self._counts[key] = entry
@@ -178,6 +182,11 @@ class RepeatGuard:
     def clear(self, actor: str, tool: str) -> None:
         for key in [k for k in self._counts if k[0] == actor and k[2] == tool]:
             del self._counts[key]
+
+
+def _digest(value: str) -> str:
+    """Fixed-size key part so caller-controlled names cannot grow guard memory."""
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:32]
 
 
 def _example(fields: dict[str, str]) -> dict[str, Any]:
@@ -198,7 +207,11 @@ def _schema_problem(fields: dict[str, str], arguments: dict[str, Any]) -> dict[s
     if required - arguments.keys():
         problem["missing"] = sorted(required - arguments.keys())
     if arguments.keys() - fields.keys():
-        problem["unknown"] = sorted(arguments.keys() - fields.keys())
+        # Caller-chosen names: bound the count and length echoed back.
+        unknown = sorted(arguments.keys() - fields.keys())
+        problem["unknown"] = [name[:64] for name in unknown[:20]]
+        if len(unknown) > 20:
+            problem["unknown_more"] = len(unknown) - 20
     if wrong:
         problem["wrong_type"] = dict(sorted(wrong.items()))
     return problem
@@ -227,8 +240,13 @@ def _tool_catalog(tools: ToolDefinitions) -> list[dict[str, Any]]:
     ]
 
 
-def _error(request_id: int | str | None, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+def _error(
+    request_id: int | str | None, code: int, message: str, data: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
 def _result(request_id: int | str, result: dict[str, Any]) -> dict[str, Any]:
@@ -356,18 +374,25 @@ class Server:
     def _call(self, request_id: int | str, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         if not isinstance(name, str) or name not in self.tools:
-            label = name[:60] if isinstance(name, str) else type(name).__name__
-            count = self.guard.record((self.actor, None, "?unknown", label))
+            label = name if isinstance(name, str) else type(name).__name__
+            count = self.guard.record((self.actor, None, "?unknown", _digest(label)))
             hint = f"; available tools: {', '.join(sorted(self.tools))}"
-            stop = ""
-            if count >= self.guard.threshold:
-                stop = "; stop_retrying: this call will not succeed"
-            return _error(request_id, -32602, "Unknown tool" + hint + stop)
+            stopped = count >= self.guard.threshold
+            return _error(
+                request_id,
+                -32602,
+                "Unknown tool" + hint,
+                {"attempt": count, "stop_retrying": stopped},
+            )
         arguments = params.get("arguments", {})
         if not isinstance(arguments, dict):
             count = self.guard.record((self.actor, None, name, "non-object-arguments"))
-            stop = "; stop_retrying" if count >= self.guard.threshold else ""
-            return _error(request_id, -32602, "Expected object arguments" + stop)
+            return _error(
+                request_id,
+                -32602,
+                "Expected object arguments",
+                {"attempt": count, "stop_retrying": count >= self.guard.threshold},
+            )
         fields = self.tools[name][1]
         required = {field for field, kind in fields.items() if not kind.endswith("?")}
         if not required <= arguments.keys() <= fields.keys() or not all(
@@ -375,10 +400,9 @@ class Server:
         ):
             problem = _schema_problem(fields, arguments)
             namespace = arguments.get("namespace")
-            fingerprint = tuple((key, tuple(value)) for key, value in problem.items())
-            count = self.guard.record(
-                (self.actor, namespace if isinstance(namespace, str) else None, name, fingerprint)
-            )
+            fingerprint = _digest(json.dumps(problem, sort_keys=True, ensure_ascii=False))
+            scope = _digest(namespace) if isinstance(namespace, str) else None
+            count = self.guard.record((self.actor, scope, name, fingerprint))
             body: dict[str, Any] = {"error": "Arguments must match the tool schema", **problem}
             body["example"] = _example(fields)
             body["attempt"] = count
