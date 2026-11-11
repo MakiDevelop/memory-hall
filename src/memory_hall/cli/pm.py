@@ -38,13 +38,27 @@ class Client:
         if not token or len(token) > 1024 or any(char.isspace() for char in token):
             raise ValueError("Set a valid MEMORY_HALL_31_TOKEN through the credential manager.")
         self.url = url
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+        }
+        # Optional Cloudflare Access service token for an approved edge route.
+        access_id = os.environ.get("MEMORY_HALL_31_CF_ACCESS_CLIENT_ID", "")
+        access_secret = os.environ.get("MEMORY_HALL_31_CF_ACCESS_CLIENT_SECRET", "")
+        if bool(access_id) != bool(access_secret):
+            raise ValueError("Set both Cloudflare Access client ID and secret, or neither.")
+        if access_id:
+            if local:
+                raise ValueError("Cloudflare Access headers are only sent to HTTPS routes.")
+            headers["CF-Access-Client-Id"] = access_id
+            headers["CF-Access-Client-Secret"] = access_secret
+        # Environment proxies stay ignored unless explicitly enabled for an HTTPS route,
+        # e.g. a cloud sandbox whose only egress is a managed proxy.
+        trust_env = os.environ.get("MEMORY_HALL_31_USE_ENV_PROXY") == "1" and not local
         self.http = httpx.Client(
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json, text/event-stream",
-            },
+            headers=headers,
             timeout=30,
-            trust_env=False,
+            trust_env=trust_env,
             follow_redirects=False,
         )
         self.request_id = 0
@@ -91,8 +105,15 @@ class Client:
                     data.extend(chunk)
                     if len(data) > MAX_RESPONSE_BYTES:
                         raise ValueError("MCP response exceeds the bounded client limit.")
+                # iter_bytes() already decoded any gzip/br body (e.g. from a CDN edge);
+                # drop the encoding headers so the rebuilt response is not decoded twice.
+                headers = [
+                    (key, value)
+                    for key, value in incoming.headers.multi_items()
+                    if key.lower() not in ("content-encoding", "content-length")
+                ]
                 response = httpx.Response(
-                    incoming.status_code, headers=incoming.headers, content=bytes(data)
+                    incoming.status_code, headers=headers, content=bytes(data)
                 )
         except httpx.RequestError:
             raise ValueError(
@@ -159,6 +180,12 @@ def parser() -> argparse.ArgumentParser:
     ingest.add_argument(
         "--summary-mode", choices=("extractive", "manual", "model"), default="extractive"
     )
+    precheck = commands.add_parser("precheck")
+    precheck.add_argument("file", type=Path)
+    precheck.add_argument("--path", default="")
+    precheck.add_argument("--summary")
+    precheck.add_argument("--type", dest="record_type")
+    precheck.add_argument("--event-date")
     checkpoint = commands.add_parser("checkpoint")
     checkpoint.add_argument("task_id")
     checkpoint.add_argument("--summary", required=True)
@@ -234,6 +261,12 @@ def _arguments(args: argparse.Namespace, client: Client) -> tuple[str, dict]:
         else:
             values["line_id"] = args.line_id
         return "handoff_read" if command == "handoff" else command, values
+    if command == "precheck":
+        values = {**scope, "text": _read_file(args.file)}
+        for key in ("path", "summary", "record_type", "event_date"):
+            if getattr(args, key):
+                values[key] = getattr(args, key)
+        return "precheck", values
     if command == "source-status":
         return "source_status", {"path": args.path, **scope}
     if command == "handoff" and args.action == "template":
