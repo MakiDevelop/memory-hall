@@ -217,5 +217,48 @@ class QuotationRuleTests(unittest.TestCase):
                 self.assertIn("quotation", {item["category"] for item in scan(text)})
 
 
+class CliEdgeTests(unittest.TestCase):
+    def _client(self, env):
+        import os
+        from unittest import mock
+
+        from memory_hall.cli.pm import Client
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            return Client("https://mh-test.example.invalid/mcp", "synthetic-token")
+
+    def test_gzip_response_from_an_edge_is_decoded_once(self):
+        import gzip
+
+        import httpx
+
+        def handler(request):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+            return httpx.Response(
+                200, headers={"content-encoding": "gzip"}, content=gzip.compress(body)
+            )
+
+        client = self._client({})
+        client.http = httpx.Client(transport=httpx.MockTransport(handler))
+        response = client.request("ping", {})
+        self.assertEqual(response.json()["id"], 1)
+
+    def test_access_headers_and_proxy_are_opt_in(self):
+        client = self._client({})
+        self.assertNotIn("CF-Access-Client-Id", client.http.headers)
+        self.assertFalse(client.http._trust_env)
+        client = self._client(
+            {
+                "MEMORY_HALL_31_CF_ACCESS_CLIENT_ID": "synthetic.access",
+                "MEMORY_HALL_31_CF_ACCESS_CLIENT_SECRET": "synthetic-secret",
+                "MEMORY_HALL_31_USE_ENV_PROXY": "1",
+            }
+        )
+        self.assertEqual(client.http.headers["CF-Access-Client-Id"], "synthetic.access")
+        self.assertTrue(client.http._trust_env)
+        with self.assertRaises(ValueError):
+            self._client({"MEMORY_HALL_31_CF_ACCESS_CLIENT_ID": "only-id"})
+
+
 if __name__ == "__main__":
     unittest.main()
