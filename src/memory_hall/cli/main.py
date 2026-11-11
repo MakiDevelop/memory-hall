@@ -24,6 +24,21 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
 
+@app.command(
+    "pm",
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+)
+def pm(ctx: typer.Context) -> None:
+    """Use the project PM MCP service with bounded plain-text responses."""
+    from memory_hall.cli.pm import main
+
+    raise typer.Exit(main(ctx.args))
+
+
 def _settings() -> Settings:
     return Settings()
 
