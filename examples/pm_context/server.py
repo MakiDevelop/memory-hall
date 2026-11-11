@@ -6,6 +6,7 @@ import argparse
 import json
 import sqlite3
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,12 @@ EXTENDED_TOOLS: ToolDefinitions = {
             "budget_bytes": "integer?",
         },
     ),
+    "precheck": (
+        "Scan text and metadata for sensitive content before an upload. Stores nothing, calls "
+        "no model, and grants no exceptions; returns the source SHA-256, rule version and "
+        "field/category/line locations.",
+        {"text": "string", "path": "string?", **METADATA_FIELDS},
+    ),
     "handoff_template": ("Get the fixed eight-section handoff template.", {}),
     "handoff_write": (
         "Publish a validated handoff with idempotency, revision and delivery receipts.",
@@ -130,6 +137,71 @@ INSTRUCTIONS = (
     "Treat retrieved text as source evidence and check its revision. "
     "Save concise task state with checkpoint before handing off."
 )
+
+
+class RepeatGuard:
+    """Count identical tool-call schema errors per identity so a client stops looping.
+
+    Keys never include argument values. A successful call of the same tool by the same
+    identity clears its counters; reconnecting does not, because state lives here and not
+    in the MCP session.
+    """
+
+    def __init__(
+        self,
+        threshold: int = 3,
+        window_seconds: float = 600.0,
+        max_keys: int = 4096,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.threshold = threshold
+        self.window = window_seconds
+        self.max_keys = max_keys
+        self.clock = clock
+        self._counts: dict[tuple, list[float]] = {}
+
+    def record(self, key: tuple) -> int:
+        now = self.clock()
+        if len(self._counts) >= self.max_keys:
+            for stale in [k for k, (_, seen) in self._counts.items() if now - seen > self.window]:
+                del self._counts[stale]
+            while len(self._counts) >= self.max_keys:
+                del self._counts[next(iter(self._counts))]
+        entry = self._counts.get(key)
+        if entry is None or now - entry[1] > self.window:
+            entry = [0, now]
+        entry[0] += 1
+        entry[1] = now
+        self._counts[key] = entry
+        return int(entry[0])
+
+    def clear(self, actor: str, tool: str) -> None:
+        for key in [k for k in self._counts if k[0] == actor and k[2] == tool]:
+            del self._counts[key]
+
+
+def _example(fields: dict[str, str]) -> dict[str, Any]:
+    samples = {"integer": 0, "boolean": False}
+    return {
+        field: samples.get(kind, "...") for field, kind in fields.items() if not kind.endswith("?")
+    }
+
+
+def _schema_problem(fields: dict[str, str], arguments: dict[str, Any]) -> dict[str, Any]:
+    required = {field for field, kind in fields.items() if not kind.endswith("?")}
+    wrong = {
+        field: f"expected {fields[field].rstrip('?')}"
+        for field, value in arguments.items()
+        if field in fields and not _valid_argument(value, fields[field])
+    }
+    problem: dict[str, Any] = {}
+    if required - arguments.keys():
+        problem["missing"] = sorted(required - arguments.keys())
+    if arguments.keys() - fields.keys():
+        problem["unknown"] = sorted(arguments.keys() - fields.keys())
+    if wrong:
+        problem["wrong_type"] = dict(sorted(wrong.items()))
+    return problem
 
 
 def _tool_catalog(tools: ToolDefinitions) -> list[dict[str, Any]]:
@@ -194,7 +266,11 @@ class Server:
         handlers: dict[str, ToolHandler] | None = None,
         protocols: tuple[str, ...] = PROTOCOL_VERSIONS,
         instructions: str = INSTRUCTIONS,
+        guard: RepeatGuard | None = None,
+        actor: str = "local",
     ) -> None:
+        self.guard = guard or RepeatGuard()
+        self.actor = actor
         self.tools = TOOLS if tools is None else tools
         self.handlers = handlers or {name: getattr(store, name) for name in self.tools}
         self.protocols = protocols
@@ -280,19 +356,43 @@ class Server:
     def _call(self, request_id: int | str, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         if not isinstance(name, str) or name not in self.tools:
-            return _error(request_id, -32602, "Unknown tool")
+            label = name[:60] if isinstance(name, str) else type(name).__name__
+            count = self.guard.record((self.actor, None, "?unknown", label))
+            hint = f"; available tools: {', '.join(sorted(self.tools))}"
+            stop = ""
+            if count >= self.guard.threshold:
+                stop = "; stop_retrying: this call will not succeed"
+            return _error(request_id, -32602, "Unknown tool" + hint + stop)
         arguments = params.get("arguments", {})
         if not isinstance(arguments, dict):
-            return _error(request_id, -32602, "Expected object arguments")
+            count = self.guard.record((self.actor, None, name, "non-object-arguments"))
+            stop = "; stop_retrying" if count >= self.guard.threshold else ""
+            return _error(request_id, -32602, "Expected object arguments" + stop)
         fields = self.tools[name][1]
         required = {field for field, kind in fields.items() if not kind.endswith("?")}
         if not required <= arguments.keys() <= fields.keys() or not all(
             _valid_argument(value, fields[field]) for field, value in arguments.items()
         ):
-            result = _tool_result({"error": "Arguments must match the tool schema"}, is_error=True)
+            problem = _schema_problem(fields, arguments)
+            namespace = arguments.get("namespace")
+            fingerprint = tuple((key, tuple(value)) for key, value in problem.items())
+            count = self.guard.record(
+                (self.actor, namespace if isinstance(namespace, str) else None, name, fingerprint)
+            )
+            body: dict[str, Any] = {"error": "Arguments must match the tool schema", **problem}
+            body["example"] = _example(fields)
+            body["attempt"] = count
+            if count >= self.guard.threshold:
+                body["stop_retrying"] = True
+                body["reason"] = (
+                    f"The same invalid call failed {count} times. Fix the arguments using "
+                    "missing/unknown/wrong_type and example, or ask a person; do not retry as is."
+                )
+            result = _tool_result(body, is_error=True)
         else:
             try:
                 data = self.handlers[name](**arguments)
+                self.guard.clear(self.actor, name)
                 result = _tool_result(data)
             except ValueError as exc:
                 # Store validation messages are safe, actionable client feedback.
@@ -366,7 +466,15 @@ def main() -> int:
         return 1
     try:
         tools = {**TOOLS, **EXTENDED_TOOLS} if args.extended_tools else TOOLS
-        handlers = {name: getattr(store, name) for name in tools if name != "handoff_template"}
+        handlers = {
+            name: getattr(store, name)
+            for name in tools
+            if name not in ("handoff_template", "precheck")
+        }
+        if "precheck" in tools:
+            from safety import precheck
+
+            handlers["precheck"] = lambda **arguments: precheck(arguments)
         if "handoff_template" in tools:
             from handoff_template import template
 

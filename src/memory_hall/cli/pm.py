@@ -159,6 +159,12 @@ def parser() -> argparse.ArgumentParser:
     ingest.add_argument(
         "--summary-mode", choices=("extractive", "manual", "model"), default="extractive"
     )
+    precheck = commands.add_parser("precheck")
+    precheck.add_argument("file", type=Path)
+    precheck.add_argument("--path", default="")
+    precheck.add_argument("--summary")
+    precheck.add_argument("--type", dest="record_type")
+    precheck.add_argument("--event-date")
     checkpoint = commands.add_parser("checkpoint")
     checkpoint.add_argument("task_id")
     checkpoint.add_argument("--summary", required=True)
@@ -234,6 +240,12 @@ def _arguments(args: argparse.Namespace, client: Client) -> tuple[str, dict]:
         else:
             values["line_id"] = args.line_id
         return "handoff_read" if command == "handoff" else command, values
+    if command == "precheck":
+        values = {**scope, "text": _read_file(args.file)}
+        for key in ("path", "summary", "record_type", "event_date"):
+            if getattr(args, key):
+                values[key] = getattr(args, key)
+        return "precheck", values
     if command == "source-status":
         return "source_status", {"path": args.path, **scope}
     if command == "handoff" and args.action == "template":

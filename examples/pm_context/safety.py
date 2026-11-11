@@ -6,6 +6,8 @@ import re
 import unicodedata
 from bisect import bisect_right
 
+RULE_VERSION = "safety-2"
+
 # These checks intentionally report locations without reproducing matched values.
 _PATTERNS = (
     (
@@ -54,7 +56,14 @@ _PATTERNS = (
         re.compile(
             r"(?:報價|报价|底價|底价|合約金額|合同金额|"
             r"\b(?:quotation|quote|quoted price|unit price)\b)"
-            r"[^\n\r]{0,60}?(?:NT\$|TWD|USD|新台幣|台幣|人民幣|[$￥¥])?\s*\d",
+            # An amount: a currency marker before digits, digits followed by a currency
+            # unit, a thousands-separated number, or a bare number of four or more digits.
+            r"[^\n\r]{0,60}?(?:"
+            r"(?:NT\$|TWD|USD|新台幣|台幣|人民幣|[$￥¥])\s*\d"
+            r"|\d[\d,.]*\s*(?:元|萬|万|塊|NTD|TWD|USD|k\b)"
+            r"|(?<![\w.])\d{1,3}(?:,\d{3})+(?![\w])"
+            r"|(?<![\w.,])\d{4,}(?![\w])"
+            r")",
             re.I,
         ),
     ),
@@ -85,3 +94,23 @@ def require_safe(text: str) -> None:
         if len(findings) > 20:
             locations += f", and {len(findings) - 20} more locations"
         raise ValueError(f"Sensitive content rejected ({locations}).")
+
+
+def precheck(arguments: dict) -> dict:
+    """Scan every string argument as a write would, without storing or calling a model."""
+    import hashlib
+
+    text = arguments.get("text")
+    if not isinstance(text, str):
+        raise ValueError("Precheck requires text.")
+    findings = []
+    for field, value in arguments.items():
+        if isinstance(value, str):
+            findings.extend({"field": field, **item} for item in scan(value))
+    return {
+        "status": "ok",
+        "rule_version": RULE_VERSION,
+        "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "safe": not findings,
+        "findings": findings,
+    }

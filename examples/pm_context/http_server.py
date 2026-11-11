@@ -28,6 +28,7 @@ from server import (
     METADATA_FIELDS,
     PROTOCOL_VERSIONS,
     TOOLS,
+    RepeatGuard,
     Server,
     ToolDefinitions,
     _error,
@@ -40,6 +41,7 @@ VERSION_HEADER = "MCP-Protocol-Version"
 HTTP_PROTOCOLS = PROTOCOL_VERSIONS[1:]
 IDLE_SECONDS = 3_600
 MAX_SESSIONS = 128
+MAX_SESSIONS_PER_PRINCIPAL = 16
 # A 2 MiB source may expand up to sixfold in an ASCII-escaped JSON body.
 MAX_BODY_BYTES = 13 * 1024 * 1024
 MAX_CONFIG_BYTES = 64 * 1024
@@ -177,6 +179,10 @@ def _read_origins(values: tuple[str, ...]) -> frozenset[str]:
 
 
 def _invoke(store: Store, principal: Principal, tool: str, summarizer: Any, **arguments) -> dict:
+    if tool == "precheck":
+        from safety import precheck
+
+        return precheck(arguments)
     if tool == "handoff_template":
         from handoff_template import template
 
@@ -219,12 +225,17 @@ def _invoke(store: Store, principal: Principal, tool: str, summarizer: Any, **ar
 
 
 def _new_server(
-    store: Store, principal: Principal, *, extended: bool = False, summarizer: Any = None
+    store: Store,
+    principal: Principal,
+    *,
+    extended: bool = False,
+    summarizer: Any = None,
+    guard: RepeatGuard | None = None,
 ) -> Server:
     reader = principal.role in ("read", "reader")
     tools = dict(READ_TOOLS if reader else WRITE_TOOLS)
     if extended:
-        names = ("digest", "handoff_template", "handoff_read", "handoff_status")
+        names = ("digest", "precheck", "handoff_template", "handoff_read", "handoff_status")
         if not reader:
             names += ("handoff_write", "handoff_retry")
         tools.update({name: EXTENDED_TOOLS[name] for name in names})
@@ -238,7 +249,13 @@ def _new_server(
         )
     )
     return Server(
-        store, tools=tools, handlers=handlers, protocols=HTTP_PROTOCOLS, instructions=instructions
+        store,
+        tools=tools,
+        handlers=handlers,
+        protocols=HTTP_PROTOCOLS,
+        instructions=instructions,
+        guard=guard,
+        actor=principal.actor,
     )
 
 
@@ -261,7 +278,10 @@ def create_app(
     allowed_origins: tuple[str, ...] = (),
     extended: bool = False,
     summarizer: Any = None,
+    guard: RepeatGuard | None = None,
+    max_sessions_per_principal: int = MAX_SESSIONS_PER_PRINCIPAL,
 ) -> FastAPI:
+    guard = guard or RepeatGuard()
     registry = PrincipalRegistry(principals, store.default_namespace)
     origins = _read_origins(allowed_origins)
     sessions: dict[str, Session] = {}
@@ -279,7 +299,9 @@ def create_app(
         principal = _authorize(request, credentials)
         now = time.monotonic()
         for key, session in list(sessions.items()):
-            if session.expires_at <= now and not session.lock.locked():
+            # Reclaim idle sessions and those whose credential was revoked or changed.
+            stale = session.expires_at <= now or session.principal not in credentials
+            if stale and not session.lock.locked():
                 sessions.pop(key)
 
         session_id = request.headers.get(SESSION_HEADER)
@@ -294,7 +316,14 @@ def create_app(
                 raise HTTPException(400, "MCP initialize required")
             if len(sessions) >= MAX_SESSIONS:
                 raise HTTPException(503, "Too many active MCP sessions")
-            server = _new_server(store, principal, extended=extended, summarizer=summarizer)
+            if (
+                sum(1 for item in sessions.values() if item.actor == principal.actor)
+                >= max_sessions_per_principal
+            ):
+                raise HTTPException(503, "Too many active MCP sessions for this credential")
+            server = _new_server(
+                store, principal, extended=extended, summarizer=summarizer, guard=guard
+            )
             initialized = server.handle(message)
             if initialized is None:
                 return Response(status_code=202)
